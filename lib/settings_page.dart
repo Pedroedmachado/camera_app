@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'config.dart';
+import 'scanner.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -63,6 +64,17 @@ class _SettingsPageState extends State<SettingsPage> {
     if (mounted) Navigator.of(context).pop(true);
   }
 
+  Future<void> _scan() async {
+    final picked = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _ScanDialog(),
+    );
+    if (picked != null && mounted) {
+      setState(() => _host.text = picked);
+    }
+  }
+
   String? _required(String? v) =>
       (v == null || v.trim().isEmpty) ? 'Obrigatório' : null;
 
@@ -97,9 +109,14 @@ class _SettingsPageState extends State<SettingsPage> {
                     decoration: const InputDecoration(
                       labelText: 'IP da câmera',
                       hintText: '192.168.0.50',
-                      helperText:
-                          'Veja no app Mibo Smart (informações da câmera) ou no roteador.',
+                      helperText: 'Use o botão abaixo para achar automaticamente.',
                     ),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: _scan,
+                    icon: const Icon(Icons.radar),
+                    label: const Text('Procurar câmera na rede'),
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
@@ -169,6 +186,108 @@ class _SettingsPageState extends State<SettingsPage> {
                 ],
               ),
             ),
+    );
+  }
+}
+
+/// Janela que varre a rede e lista o que parece ser câmera.
+class _ScanDialog extends StatefulWidget {
+  const _ScanDialog();
+
+  @override
+  State<_ScanDialog> createState() => _ScanDialogState();
+}
+
+class _ScanDialogState extends State<_ScanDialog> {
+  int _done = 0;
+  int _total = 0;
+  bool _finished = false;
+  List<FoundDevice> _found = const [];
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _run();
+  }
+
+  Future<void> _run() async {
+    try {
+      final result = await CameraScanner.scan(onProgress: (d, t) {
+        if (mounted) {
+          setState(() {
+            _done = d;
+            _total = t;
+          });
+        }
+      });
+      if (!mounted) return;
+      setState(() {
+        _found = result;
+        _finished = true;
+        if (_total == 0) {
+          _error = 'Este aparelho não está conectado a nenhuma rede local.';
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Erro ao procurar: $e';
+        _finished = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Widget body;
+    if (!_finished) {
+      body = Column(mainAxisSize: MainAxisSize.min, children: [
+        LinearProgressIndicator(value: _total == 0 ? null : _done / _total),
+        const SizedBox(height: 12),
+        Text(_total == 0 ? 'Começando…' : 'Verificando $_done de $_total endereços…'),
+      ]);
+    } else if (_error != null) {
+      body = Text(_error!);
+    } else if (_found.isEmpty) {
+      body = const Text(
+        'Nenhuma câmera encontrada.\n\n'
+        '• Confira se este aparelho está no mesmo Wi-Fi da câmera.\n'
+        '• A luz da câmera precisa estar verde fixa (conectada ao Wi-Fi).\n'
+        '• Se a câmera nunca foi ligada ao Wi-Fi, ela ainda não está na rede.',
+      );
+    } else {
+      body = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final d in _found)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                d.likelyCamera ? Icons.videocam : Icons.device_unknown,
+                color: d.likelyCamera ? Colors.greenAccent : null,
+              ),
+              title: Text(d.ip),
+              subtitle: Text([
+                if (d.likelyCamera) 'Provavelmente a câmera',
+                if (d.rtsp) 'vídeo (554)',
+                if (d.dahua) 'controle (37777)',
+                if (d.server != null) d.server!,
+              ].join(' · ')),
+              onTap: () => Navigator.pop(context, d.ip),
+            ),
+        ],
+      );
+    }
+    return AlertDialog(
+      title: const Text('Procurar câmera'),
+      content: SingleChildScrollView(child: body),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(_finished ? 'Fechar' : 'Cancelar'),
+        ),
+      ],
     );
   }
 }
