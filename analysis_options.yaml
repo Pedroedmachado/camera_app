@@ -1,0 +1,4 @@
+# Sem pacote de lints extra: só a análise padrão do Dart.
+analyzer:
+  errors:
+    unused_import: warning
