@@ -13,7 +13,9 @@ import 'config.dart';
 import 'gallery_page.dart';
 import 'rtsp_probe.dart';
 import 'settings_page.dart';
+import 'sd_page.dart';
 import 'storage.dart';
+import 'talk.dart';
 
 class LivePage extends StatefulWidget {
   const LivePage({super.key});
@@ -38,6 +40,10 @@ class _LivePageState extends State<LivePage> {
   bool _hasVideo = false;
   String? _error;
   bool _fullscreen = false;
+
+  TalkSession? _talk;
+  bool _talking = false;
+  bool _talkStarting = false;
 
   bool _recording = false;
   String? _recPath;
@@ -98,6 +104,7 @@ class _LivePageState extends State<LivePage> {
       s.cancel();
     }
     if (_recording) _setProp('stream-record', '');
+    _talk?.stop();
     _player.dispose();
     WakelockPlus.disable();
     _exitFullscreenSystemUi();
@@ -315,6 +322,51 @@ class _LivePageState extends State<LivePage> {
     }
   }
 
+  Future<void> _toggleTalk() async {
+    final cfg = _cfg;
+    if (cfg == null || _talkStarting) return;
+    if (_talking) {
+      await _talk?.stop();
+      _talk = null;
+      setState(() => _talking = false);
+      await _player.setVolume(_muted ? 0 : 100);
+      return;
+    }
+    setState(() => _talkStarting = true);
+    final t = TalkSession(cfg, onEnded: (reason) {
+      if (!mounted) return;
+      setState(() => _talking = false);
+      _player.setVolume(_muted ? 0 : 100);
+      _toast(reason);
+    });
+    try {
+      await t.start();
+      _talk = t;
+      // Silencia o som da câmera enquanto fala, para não dar eco.
+      await _player.setVolume(0);
+      if (mounted) setState(() => _talking = true);
+      _toast('Falando… toque em "Parar" para encerrar.');
+    } catch (e) {
+      _toast('$e');
+    } finally {
+      if (mounted) setState(() => _talkStarting = false);
+    }
+  }
+
+  Future<void> _openSd() async {
+    final cfg = _cfg;
+    if (cfg == null) return;
+    if (_recording) await _stopRecording();
+    if (_talking) await _toggleTalk();
+    // Libera a câmera (ela aceita poucas conexões de vídeo ao mesmo tempo).
+    await _player.stop();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => SdPage(cfg: cfg)),
+    );
+    if (mounted) await _connect();
+  }
+
   Future<void> _openGallery() async {
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const GalleryPage()),
@@ -373,6 +425,11 @@ class _LivePageState extends State<LivePage> {
       appBar: AppBar(
         title: Text(cfg.name),
         actions: [
+          IconButton(
+            tooltip: 'Cartão SD (gravações)',
+            icon: const Icon(Icons.sd_card_outlined),
+            onPressed: _openSd,
+          ),
           IconButton(
             tooltip: 'Galeria',
             icon: const Icon(Icons.photo_library_outlined),
@@ -481,6 +538,14 @@ class _LivePageState extends State<LivePage> {
             _toggleRecording,
             color: _recording ? Colors.red : null,
           ),
+          _btn(
+            _talkStarting
+                ? Icons.hourglass_top
+                : (_talking ? Icons.mic_off : Icons.mic),
+            _talking ? 'Parar' : 'Falar',
+            _toggleTalk,
+            color: _talking ? Colors.greenAccent : null,
+          ),
           _btn(_hd ? Icons.hd : Icons.sd, _hd ? 'HD' : 'SD', _toggleQuality),
           _btn(_fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
               'Tela', _toggleFullscreen),
@@ -494,9 +559,9 @@ class _LivePageState extends State<LivePage> {
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, size: 28, color: color),
+          Icon(icon, size: 26, color: color),
           const SizedBox(height: 2),
           Text(label, style: const TextStyle(fontSize: 12)),
         ]),

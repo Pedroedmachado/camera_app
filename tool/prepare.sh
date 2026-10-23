@@ -8,11 +8,18 @@ rm -rf test
 M=android/app/src/main/AndroidManifest.xml
 if [ -f "$M" ]; then
   if ! grep -q 'android.permission.INTERNET' "$M"; then
-    sed -i 's#<manifest xmlns:android="http://schemas.android.com/apk/res/android">#&\n    <uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>#' "$M"
+    sed -i 's#<manifest xmlns:android="http://schemas.android.com/apk/res/android">#&\n    <uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>#' "$M"
   fi
   grep -q 'android.permission.INTERNET' "$M" || { echo "Falha ao adicionar permissão INTERNET"; exit 1; }
   sed -i 's#android:label="camlivre"#android:label="CamLivre"#' "$M"
 fi
+
+# minSdk 24 (microfone/record precisa de Android 7+)
+for G in android/app/build.gradle.kts android/app/build.gradle; do
+  if [ -f "$G" ]; then
+    sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/; s/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' "$G"
+  fi
+done
 
 W=windows/runner/main.cpp
 if [ -f "$W" ]; then

@@ -118,6 +118,13 @@ class _GalleryPageState extends State<GalleryPage> {
 List<Widget> _fileActions(BuildContext context, File file) {
   Future<void> toPhoneGallery() async {
     final messenger = ScaffoldMessenger.of(context);
+    if (file.path.toLowerCase().endsWith('.dav')) {
+      messenger.showSnackBar(const SnackBar(
+          content: Text(
+              'Arquivo .dav (original da câmera) não entra na galeria do celular. '
+              'Assista aqui no app ou use “Gravar” na reprodução para gerar um .mkv.')));
+      return;
+    }
     try {
       if (!await Gal.hasAccess(toAlbum: true)) await Gal.requestAccess(toAlbum: true);
       if (Storage.isPhoto(file.path)) {

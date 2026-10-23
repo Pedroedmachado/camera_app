@@ -42,7 +42,7 @@ class Storage {
 
   static bool isVideo(String path) {
     final e = p.extension(path).toLowerCase();
-    return e == '.mkv' || e == '.mp4' || e == '.ts';
+    return e == '.mkv' || e == '.mp4' || e == '.ts' || e == '.dav';
   }
 
   /// Todos os arquivos (fotos + vídeos), mais recentes primeiro.

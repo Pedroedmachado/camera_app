@@ -16,6 +16,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final _name = TextEditingController();
   final _host = TextEditingController();
   final _port = TextEditingController();
+  final _httpPort = TextEditingController();
   final _user = TextEditingController();
   final _pass = TextEditingController();
   final _channel = TextEditingController();
@@ -32,6 +33,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _name.text = c.name;
         _host.text = c.host;
         _port.text = c.port.toString();
+        _httpPort.text = c.httpPort.toString();
         _user.text = c.user;
         _pass.text = c.password;
         _channel.text = c.channel.toString();
@@ -43,7 +45,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
-    for (final c in [_name, _host, _port, _user, _pass, _channel]) {
+    for (final c in [_name, _host, _port, _httpPort, _user, _pass, _channel]) {
       c.dispose();
     }
     super.dispose();
@@ -55,6 +57,7 @@ class _SettingsPageState extends State<SettingsPage> {
       name: _name.text.trim().isEmpty ? 'Câmera' : _name.text.trim(),
       host: _host.text.trim(),
       port: int.parse(_port.text.trim()),
+      httpPort: int.parse(_httpPort.text.trim()),
       user: _user.text.trim(),
       password: _pass.text,
       channel: int.parse(_channel.text.trim()),
@@ -159,6 +162,15 @@ class _SettingsPageState extends State<SettingsPage> {
                         inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                         decoration:
                             const InputDecoration(labelText: 'Porta RTSP'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _httpPort,
+                        validator: _number,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                        decoration: const InputDecoration(
+                            labelText: 'Porta web (cartão SD)'),
                       ),
                       const SizedBox(height: 12),
                       TextFormField(

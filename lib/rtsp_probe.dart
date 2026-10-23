@@ -14,11 +14,11 @@ class ProbeResult {
   ProbeResult(this.ok, this.message, {this.video, this.audio});
 }
 
-class _Response {
+class RtspResponse {
   final int status;
   final Map<String, String> headers;
   final String body;
-  _Response(this.status, this.headers, this.body);
+  RtspResponse(this.status, this.headers, this.body);
 }
 
 /// Faz um DESCRIBE RTSP com autenticação Digest/Basic, igual a um player,
@@ -41,7 +41,7 @@ class RtspProbe {
           'Não consegui conectar em $host:$port. Confira o IP, a porta RTSP e se está no mesmo Wi-Fi.');
     }
 
-    final reader = _Reader(socket);
+    final reader = RtspReader(socket);
     try {
       var cseq = 1;
       socket.write(_req('DESCRIBE', uri, cseq++, null));
@@ -52,7 +52,7 @@ class RtspProbe {
 
       if (res.status == 401) {
         final challenge = res.headers['www-authenticate'] ?? '';
-        final auth = _authHeader(challenge, 'DESCRIBE', uri, user, password);
+        final auth = authHeader(challenge, 'DESCRIBE', uri, user, password);
         if (auth == null) {
           return ProbeResult(false, 'A câmera pediu um tipo de login desconhecido: $challenge');
         }
@@ -65,8 +65,8 @@ class RtspProbe {
 
       switch (res.status) {
         case 200:
-          final v = _codec(res.body, 'video');
-          final a = _codec(res.body, 'audio');
+          final v = codec(res.body, 'video');
+          final a = codec(res.body, 'audio');
           return ProbeResult(
             true,
             'Senha OK. A câmera liberou o vídeo'
@@ -107,7 +107,7 @@ class RtspProbe {
 
   static String _md5(String s) => md5.convert(utf8.encode(s)).toString();
 
-  static String? _authHeader(
+  static String? authHeader(
       String challenge, String method, String uri, String user, String pass) {
     final lower = challenge.toLowerCase();
     if (lower.startsWith('basic')) {
@@ -136,7 +136,7 @@ class RtspProbe {
   }
 
   /// Lê o codec da seção m=video / m=audio do SDP.
-  static String? _codec(String sdp, String kind) {
+  static String? codec(String sdp, String kind) {
     String? section;
     for (final raw in const LineSplitter().convert(sdp)) {
       final line = raw.trim();
@@ -151,13 +151,18 @@ class RtspProbe {
 }
 
 /// Junta os bytes do socket e entrega uma resposta RTSP completa por vez.
-class _Reader {
+class RtspReader {
   final List<int> _buf = [];
   final _waiters = <Completer<void>>[];
   bool _closed = false;
 
-  _Reader(Socket s) {
+  /// Depois do PLAY a câmera pode mandar dados binários; descarta tudo.
+  bool discard = false;
+  bool get closed => _closed;
+
+  RtspReader(Socket s) {
     s.listen((Uint8List data) {
+      if (discard) return;
       _buf.addAll(data);
       _wake();
     }, onDone: () {
@@ -182,7 +187,7 @@ class _Reader {
     return c.future;
   }
 
-  Future<_Response?> next() async {
+  Future<RtspResponse?> next() async {
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     while (true) {
       final text = latin1.decode(_buf, allowInvalid: true);
@@ -205,7 +210,7 @@ class _Reader {
           _buf.removeRange(0, total);
           final parts = lines.first.split(' ');
           final status = parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0;
-          return _Response(status, headers, body);
+          return RtspResponse(status, headers, body);
         }
       }
       if (_closed) return null;
