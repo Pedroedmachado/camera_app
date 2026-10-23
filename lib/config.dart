@@ -10,6 +10,8 @@ class CameraConfig {
   String password;
   int channel;
   bool hd;
+  int rotation; // giro só na tela do app, em quartos de volta (0, 1, 2, 3)
+  bool mirror; // espelhar só na tela do app
 
   CameraConfig({
     this.name = 'Câmera',
@@ -20,6 +22,8 @@ class CameraConfig {
     this.password = '',
     this.channel = 1,
     this.hd = true,
+    this.rotation = 0,
+    this.mirror = false,
   });
 
   bool get isComplete => host.trim().isNotEmpty && password.isNotEmpty;
@@ -59,6 +63,8 @@ class CameraConfig {
       password: sp.getString('password') ?? '',
       channel: sp.getInt('channel') ?? 1,
       hd: sp.getBool('hd') ?? true,
+      rotation: sp.getInt('rotation') ?? 0,
+      mirror: sp.getBool('mirror') ?? false,
     );
   }
 
@@ -72,5 +78,7 @@ class CameraConfig {
     await sp.setString('password', password);
     await sp.setInt('channel', channel);
     await sp.setBool('hd', hd);
+    await sp.setInt('rotation', rotation);
+    await sp.setBool('mirror', mirror);
   }
 }

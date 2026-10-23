@@ -53,6 +53,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _save() async {
     if (!_form.currentState!.validate()) return;
+    final old = await CameraConfig.load();
     final cfg = CameraConfig(
       name: _name.text.trim().isEmpty ? 'Câmera' : _name.text.trim(),
       host: _host.text.trim(),
@@ -62,6 +63,8 @@ class _SettingsPageState extends State<SettingsPage> {
       password: _pass.text,
       channel: int.parse(_channel.text.trim()),
       hd: _hd,
+      rotation: old.rotation,
+      mirror: old.mirror,
     );
     await cfg.save();
     if (mounted) Navigator.of(context).pop(true);

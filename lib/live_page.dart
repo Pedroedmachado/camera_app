@@ -13,6 +13,7 @@ import 'config.dart';
 import 'gallery_page.dart';
 import 'rtsp_probe.dart';
 import 'settings_page.dart';
+import 'orientation.dart';
 import 'sd_page.dart';
 import 'storage.dart';
 import 'talk.dart';
@@ -237,11 +238,13 @@ class _LivePageState extends State<LivePage> {
       _toast('Sem imagem para fotografar.');
       return;
     }
-    final bytes = await _player.screenshot(format: 'image/jpeg');
-    if (bytes == null) {
+    final raw = await _player.screenshot(format: 'image/jpeg');
+    if (raw == null) {
       _toast('Não consegui capturar a foto.');
       return;
     }
+    final bytes =
+        await orientJpeg(raw, _cfg?.rotation ?? 0, _cfg?.mirror ?? false);
     final dir = await Storage.photos();
     final file = File(p.join(dir.path, 'foto_${Storage.stamp()}.jpg'));
     await file.writeAsBytes(bytes);
@@ -426,6 +429,12 @@ class _LivePageState extends State<LivePage> {
         title: Text(cfg.name),
         actions: [
           IconButton(
+            tooltip: 'Girar / inverter imagem',
+            icon: const Icon(Icons.screen_rotation_alt),
+            onPressed: () => showOrientationSheet(context, cfg,
+                onAppChanged: () => setState(() {})),
+          ),
+          IconButton(
             tooltip: 'Cartão SD (gravações)',
             icon: const Icon(Icons.sd_card_outlined),
             onPressed: _openSd,
@@ -461,10 +470,14 @@ class _LivePageState extends State<LivePage> {
 
   Widget _videoArea() {
     return Stack(fit: StackFit.expand, children: [
-      Video(
-        controller: _controller,
-        controls: NoVideoControls,
-        fit: BoxFit.contain,
+      orientVideo(
+        Video(
+          controller: _controller,
+          controls: NoVideoControls,
+          fit: BoxFit.contain,
+        ),
+        rotation: _cfg?.rotation ?? 0,
+        mirror: _cfg?.mirror ?? false,
       ),
       if (_connecting && !_hasVideo && _error == null)
         Center(

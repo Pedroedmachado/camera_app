@@ -5,7 +5,9 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path/path.dart' as p;
 
+import 'config.dart';
 import 'exporter.dart';
+import 'orientation.dart';
 import 'rec_saver.dart';
 import 'storage.dart';
 
@@ -313,11 +315,21 @@ class _VideoView extends StatefulWidget {
 class _VideoViewState extends State<_VideoView> {
   late final Player _player = Player();
   late final VideoController _controller = VideoController(_player);
+  int _rotation = 0;
+  bool _mirror = false;
 
   @override
   void initState() {
     super.initState();
     _player.open(Media(widget.file.path));
+    CameraConfig.load().then((c) {
+      if (mounted) {
+        setState(() {
+          _rotation = c.rotation;
+          _mirror = c.mirror;
+        });
+      }
+    });
   }
 
   @override
@@ -339,7 +351,8 @@ class _VideoViewState extends State<_VideoView> {
       body: Center(
         child: AspectRatio(
           aspectRatio: 16 / 9,
-          child: Video(controller: _controller),
+          child: orientVideo(Video(controller: _controller),
+              rotation: _rotation, mirror: _mirror),
         ),
       ),
     );

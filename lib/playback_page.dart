@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import 'config.dart';
 import 'dahua_http.dart';
 import 'sd_api.dart';
+import 'orientation.dart';
 import 'player_util.dart';
 import 'rec_saver.dart';
 import 'storage.dart';
@@ -109,7 +110,10 @@ class _PlaybackPageState extends State<PlaybackPage> {
   }
 
   Future<void> _snapshot() async {
-    final bytes = await _player.screenshot(format: 'image/jpeg');
+    final raw = await _player.screenshot(format: 'image/jpeg');
+    final bytes = raw == null
+        ? null
+        : await orientJpeg(raw, widget.cfg.rotation, widget.cfg.mirror);
     if (bytes == null) {
       _toast('Sem imagem para fotografar.');
       return;
@@ -191,7 +195,11 @@ class _PlaybackPageState extends State<PlaybackPage> {
         AspectRatio(
           aspectRatio: 16 / 9,
           child: Stack(fit: StackFit.expand, children: [
-            Video(controller: _controller, controls: NoVideoControls),
+            orientVideo(
+              Video(controller: _controller, controls: NoVideoControls),
+              rotation: widget.cfg.rotation,
+              mirror: widget.cfg.mirror,
+            ),
             if (!_hasVideo && _error == null)
               const Center(child: CircularProgressIndicator()),
             if (_error != null)
