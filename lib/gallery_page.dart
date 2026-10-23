@@ -6,6 +6,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path/path.dart' as p;
 
+import 'rec_saver.dart';
 import 'storage.dart';
 
 class GalleryPage extends StatefulWidget {
@@ -121,8 +122,8 @@ List<Widget> _fileActions(BuildContext context, File file) {
     if (file.path.toLowerCase().endsWith('.dav')) {
       messenger.showSnackBar(const SnackBar(
           content: Text(
-              'Arquivo .dav (original da câmera) não entra na galeria do celular. '
-              'Assista aqui no app ou use “Gravar” na reprodução para gerar um .mkv.')));
+              'Arquivo .dav não entra na galeria do celular. '
+              'Use o botão de converter para gerar o vídeo .mkv.')));
       return;
     }
     try {
@@ -162,7 +163,32 @@ List<Widget> _fileActions(BuildContext context, File file) {
     }
   }
 
+  Future<void> convert() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final nav = Navigator.of(context);
+    messenger.showSnackBar(const SnackBar(
+        content: Text('Convertendo para vídeo… pode levar alguns segundos.'),
+        duration: Duration(seconds: 30)));
+    try {
+      final out = await convertLocalDav(file);
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('Vídeo criado: ${p.basename(out.path)}')));
+      nav.pop();
+    } catch (e) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('Não deu para converter: $e')));
+    }
+  }
+
   return [
+    if (file.path.toLowerCase().endsWith('.dav'))
+      IconButton(
+        tooltip: 'Converter para vídeo (.mkv)',
+        icon: const Icon(Icons.transform),
+        onPressed: convert,
+      ),
     if (Platform.isAndroid)
       IconButton(
         tooltip: 'Salvar na galeria do celular',

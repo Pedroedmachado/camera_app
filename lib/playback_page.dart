@@ -10,6 +10,7 @@ import 'config.dart';
 import 'dahua_http.dart';
 import 'sd_api.dart';
 import 'player_util.dart';
+import 'rec_saver.dart';
 import 'storage.dart';
 
 /// Assiste uma gravação do cartão SD (stream de reprodução RTSP da câmera).
@@ -52,6 +53,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
   bool _downloading = false;
   double _dlProgress = 0;
   bool _dlCancel = false;
+  String _dlStatus = '';
 
   @override
   void initState() {
@@ -141,30 +143,32 @@ class _PlaybackPageState extends State<PlaybackPage> {
     setState(() => _recording = true);
   }
 
-  /// Baixa o arquivo original inteiro (.dav), mais rápido que gravar.
+  /// Baixa a gravação inteira e converte para vídeo comum (.mkv).
   Future<void> _download() async {
     final rec = widget.recording;
     final api = widget.api;
     if (rec == null || api == null) return;
-    final dir = await Storage.videos();
-    final s = rec.start;
-    final name = 'cartao_${s.year}${two(s.month)}${two(s.day)}_'
-        '${two(s.hour)}${two(s.minute)}${two(s.second)}.dav';
-    final dest = File(p.join(dir.path, name));
     setState(() {
       _downloading = true;
       _dlProgress = 0;
+      _dlStatus = 'Baixando do cartão…';
       _dlCancel = false;
     });
     try {
-      await api.download(rec, dest,
+      final out = await saveRecordingAsVideo(api, rec,
           cancelled: () => _dlCancel,
-          onProgress: (r, t) {
-            if (mounted && t > 0) setState(() => _dlProgress = r / t);
+          onStatus: (st, prog) {
+            if (mounted) {
+              setState(() {
+                _dlStatus = st;
+                _dlProgress = prog ?? 0;
+              });
+            }
           });
-      _toast('Gravação baixada na Galeria ($name).');
+      _toast('Vídeo salvo: ${p.basename(out.path)}'
+          '${Platform.isAndroid ? ' (também na galeria do celular)' : ''}.');
     } catch (e) {
-      _toast('Falha ao baixar: $e');
+      _toast('$e');
     } finally {
       if (mounted) setState(() => _downloading = false);
     }
@@ -248,7 +252,9 @@ class _PlaybackPageState extends State<PlaybackPage> {
                     LinearProgressIndicator(value: _dlProgress == 0 ? null : _dlProgress),
                     const SizedBox(height: 6),
                     Row(children: [
-                      Text('Baixando ${(_dlProgress * 100).toStringAsFixed(0)}%'),
+                      Text(_dlProgress > 0
+                          ? '$_dlStatus ${(_dlProgress * 100).toStringAsFixed(0)}%'
+                          : _dlStatus),
                       const Spacer(),
                       TextButton(
                           onPressed: () => _dlCancel = true,
@@ -260,15 +266,15 @@ class _PlaybackPageState extends State<PlaybackPage> {
                     child: FilledButton.icon(
                       onPressed: _download,
                       icon: const Icon(Icons.download),
-                      label: const Text('Baixar gravação inteira'),
+                      label: const Text('Salvar gravação como vídeo (.mkv)'),
                     ),
                   ),
           ),
         const Padding(
           padding: EdgeInsets.all(16),
           child: Text(
-            '“Gravar” salva só o que passar na tela (.mkv, abre em qualquer player). '
-            '“Baixar” pega o arquivo original da câmera (.dav, abre aqui no app ou no VLC).',
+            '“Salvar como vídeo” baixa a gravação inteira do cartão e converte para .mkv, '
+            'sem perder qualidade. “Gravar” salva só o que passar na tela.',
             style: TextStyle(color: Colors.white54, fontSize: 12),
           ),
         ),

@@ -1,8 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'config.dart';
 import 'dahua_http.dart';
 import 'playback_page.dart';
+import 'rec_saver.dart';
 import 'sd_api.dart';
 import 'player_util.dart';
 
@@ -203,6 +206,81 @@ class _SdPageState extends State<SdPage> {
     }
   }
 
+  /// Salva uma ou várias gravações como vídeo, com janela de progresso.
+  Future<void> _saveVideos(List<Recording> recs) async {
+    final api = _api;
+    if (api == null || recs.isEmpty) return;
+    var cancel = false;
+    var index = 0;
+    var status = '';
+    double? progress;
+    var saved = 0;
+    final errors = <String>[];
+    StateSetter? setDialog;
+    var closed = false;
+    void refresh(VoidCallback fn) {
+      if (!closed && !cancel) setDialog?.call(fn);
+    }
+
+    final dialog = showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(builder: (c, set) {
+        setDialog = set;
+        return AlertDialog(
+          title: Text(recs.length == 1
+              ? 'Salvando vídeo'
+              : 'Salvando ${index + 1} de ${recs.length}'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            if (index < recs.length)
+              Text('${hms(recs[index].start)} – ${hms(recs[index].end)}'),
+            const SizedBox(height: 10),
+            LinearProgressIndicator(value: progress),
+            const SizedBox(height: 8),
+            Text(status, style: const TextStyle(color: Colors.white70)),
+          ]),
+          actions: [
+            TextButton(
+              onPressed: () {
+                cancel = true;
+                Navigator.pop(c);
+              },
+              child: const Text('Cancelar'),
+            ),
+          ],
+        );
+      }),
+    );
+    dialog.then((_) => closed = true);
+
+    for (index = 0; index < recs.length && !cancel; index++) {
+      refresh(() {
+        status = 'Começando…';
+        progress = null;
+      });
+      try {
+        await saveRecordingAsVideo(api, recs[index],
+            cancelled: () => cancel,
+            onStatus: (st, pr) => refresh(() {
+                  status = st;
+                  progress = pr;
+                }));
+        saved++;
+      } catch (e) {
+        if (!cancel) errors.add('${hms(recs[index].start)}: $e');
+      }
+    }
+    if (!cancel && !closed && mounted) Navigator.of(context, rootNavigator: true).pop();
+    await dialog;
+    if (!mounted) return;
+    final msg = StringBuffer('$saved vídeo(s) salvo(s) na Galeria');
+    if (Platform.isAndroid) msg.write(' e na galeria do celular (álbum CamLivre)');
+    msg.write('.');
+    if (errors.isNotEmpty) msg.write('\n${errors.length} com erro: ${errors.first}');
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg.toString()), duration: const Duration(seconds: 6)));
+  }
+
   // ---------- interface ----------
 
   @override
@@ -401,6 +479,16 @@ class _SdPageState extends State<SdPage> {
           ),
         ]),
       ),
+      if (all.any((r) => r.isMotion))
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: FilledButton.tonalIcon(
+            onPressed: () => _saveVideos(all.where((r) => r.isMotion).toList()),
+            icon: const Icon(Icons.video_library_outlined),
+            label: Text(
+                'Salvar os ${all.where((r) => r.isMotion).length} eventos de movimento como vídeo'),
+          ),
+        ),
       for (final r in list)
         Card(
           child: ListTile(
@@ -411,7 +499,16 @@ class _SdPageState extends State<SdPage> {
             title: Text('${hms(r.start)} – ${hms(r.end)}'),
             subtitle: Text(
                 '${formatDuration(r.duration)}${r.isMotion ? ' · movimento' : ''}'),
-            trailing: const Icon(Icons.play_circle_outline),
+            trailing: PopupMenuButton<String>(
+              onSelected: (v) {
+                if (v == 'play') _play(r.start, r.end, rec: r);
+                if (v == 'save') _saveVideos([r]);
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'play', child: Text('Assistir')),
+                PopupMenuItem(value: 'save', child: Text('Salvar como vídeo (.mkv)')),
+              ],
+            ),
             onTap: () => _play(r.start, r.end, rec: r),
           ),
         ),
