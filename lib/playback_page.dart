@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 
 import 'config.dart';
 import 'dahua_http.dart';
+import 'sd_api.dart';
 import 'player_util.dart';
 import 'storage.dart';
 
@@ -19,14 +20,14 @@ class PlaybackPage extends StatefulWidget {
     required this.start,
     required this.end,
     this.recording,
-    this.http,
+    this.api,
   });
 
   final CameraConfig cfg;
   final DateTime start;
   final DateTime end;
   final Recording? recording; // presente quando veio da lista
-  final DahuaHttp? http; // permite baixar o arquivo original
+  final SdApi? api; // permite baixar o arquivo original
 
   @override
   State<PlaybackPage> createState() => _PlaybackPageState();
@@ -143,8 +144,8 @@ class _PlaybackPageState extends State<PlaybackPage> {
   /// Baixa o arquivo original inteiro (.dav), mais rápido que gravar.
   Future<void> _download() async {
     final rec = widget.recording;
-    final http = widget.http;
-    if (rec == null || http == null) return;
+    final api = widget.api;
+    if (rec == null || api == null) return;
     final dir = await Storage.videos();
     final s = rec.start;
     final name = 'cartao_${s.year}${two(s.month)}${two(s.day)}_'
@@ -156,7 +157,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
       _dlCancel = false;
     });
     try {
-      await http.download(rec, dest,
+      await api.download(rec, dest,
           cancelled: () => _dlCancel,
           onProgress: (r, t) {
             if (mounted && t > 0) setState(() => _dlProgress = r / t);
@@ -239,7 +240,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
               color: _recording ? Colors.red : null),
         ]),
         const SizedBox(height: 12),
-        if (widget.recording != null && widget.http != null)
+        if (widget.recording != null && widget.api != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: _downloading

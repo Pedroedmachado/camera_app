@@ -89,23 +89,30 @@ class DahuaHttp {
     }
   }
 
-  String _request(String target, String? auth) {
+  String _request(String method, String target, String? auth,
+      {Map<String, String> headers = const {}, List<int>? body}) {
     final b = StringBuffer()
-      ..write('GET $target HTTP/1.1\r\n')
+      ..write('$method $target HTTP/1.1\r\n')
       ..write('Host: $host:$port\r\n')
       ..write('User-Agent: CamLivre\r\n')
       ..write('Connection: close\r\n');
     if (auth != null) b.write('Authorization: $auth\r\n');
+    headers.forEach((k, v) => b.write('$k: $v\r\n'));
+    if (body != null) b.write('Content-Length: ${body.length}\r\n');
     b.write('\r\n');
     return b.toString();
   }
 
-  /// Abre a requisição já autenticada e devolve cabeçalhos + fluxo do corpo.
-  Future<_OpenResponse> _open(String target) async {
+  /// Abre a requisição (com Digest se a câmera pedir) e devolve o fluxo.
+  Future<_OpenResponse> _open(String target,
+      {String method = 'GET',
+      Map<String, String> headers = const {},
+      List<int>? body}) async {
     String? auth;
     for (var round = 0; round < 2; round++) {
       final socket = await _connect();
-      socket.write(_request(target, auth));
+      socket.write(_request(method, target, auth, headers: headers, body: body));
+      if (body != null) socket.add(body);
       final resp = await _OpenResponse.read(socket);
       if (resp.status == 401 && round == 0) {
         await resp.drain();
@@ -114,13 +121,23 @@ class DahuaHttp {
           (c) => c.toLowerCase().startsWith('digest'),
           orElse: () => challenges.isEmpty ? '' : challenges.first,
         );
-        auth = RtspProbe.authHeader(digest, 'GET', target, user, password);
+        auth = RtspProbe.authHeader(digest, method, target, user, password);
         if (auth == null) return resp;
         continue;
       }
       return resp;
     }
     throw StateError('inalcançável');
+  }
+
+  Future<HttpResult> post(String target, String json,
+      {Map<String, String> headers = const {}}) async {
+    final r = await _open(target,
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', ...headers},
+        body: utf8.encode(json));
+    final bytes = await r.readAll();
+    return HttpResult(r.status, utf8.decode(bytes, allowMalformed: true));
   }
 
   Future<HttpResult> get(String target) async {
@@ -265,8 +282,10 @@ class DahuaHttp {
     File dest, {
     void Function(int received, int total)? onProgress,
     bool Function()? cancelled,
+    Map<String, String> headers = const {},
+    String prefix = '/cgi-bin/RPC_Loadfile',
   }) async {
-    final r = await _open('/cgi-bin/RPC_Loadfile${rec.filePath}');
+    final r = await _open('$prefix${rec.filePath}', headers: headers);
     if (r.status != 200) {
       await r.drain();
       _check(HttpResult(r.status, ''));

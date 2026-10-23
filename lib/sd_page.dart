@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'config.dart';
 import 'dahua_http.dart';
 import 'playback_page.dart';
+import 'sd_api.dart';
 import 'player_util.dart';
 
 /// Tela do cartão de memória: uso, gravações por dia, assistir, baixar e apagar.
@@ -22,6 +23,7 @@ class _SdPageState extends State<SdPage> {
     password: widget.cfg.password,
   );
 
+  SdApi? _api;
   bool _checking = true;
   String? _apiError; // API web indisponível → só modo por horário
   List<StorageDisk> _disks = const [];
@@ -47,9 +49,12 @@ class _SdPageState extends State<SdPage> {
       _apiError = null;
     });
     try {
-      await _http.deviceType();
+      final api = await SdApi.open(_http);
       if (!mounted) return;
-      setState(() => _checking = false);
+      setState(() {
+        _api = api;
+        _checking = false;
+      });
       await Future.wait([_loadDisks(), _loadRecs()]);
     } catch (e) {
       if (!mounted) return;
@@ -62,7 +67,7 @@ class _SdPageState extends State<SdPage> {
 
   Future<void> _loadDisks() async {
     try {
-      final d = await _http.storage();
+      final d = await _api!.storage();
       if (mounted) {
         setState(() {
           _disks = d;
@@ -82,7 +87,7 @@ class _SdPageState extends State<SdPage> {
     final from = DateTime(_day.year, _day.month, _day.day);
     final to = from.add(const Duration(hours: 23, minutes: 59, seconds: 59));
     try {
-      final r = await _http.findRecordings(from, to, channel: widget.cfg.channel);
+      final r = await _api!.findRecordings(from, to, channel: widget.cfg.channel);
       if (mounted) setState(() => _recs = r);
     } catch (e) {
       if (mounted) {
@@ -123,7 +128,7 @@ class _SdPageState extends State<SdPage> {
         start: start,
         end: end,
         recording: rec,
-        http: _apiError == null ? _http : null,
+        api: _apiError == null ? _api : null,
       ),
     ));
   }
@@ -185,7 +190,7 @@ class _SdPageState extends State<SdPage> {
     setState(() => _formatting = true);
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await _http.format(disk);
+      await _api!.format(disk);
       messenger.showSnackBar(const SnackBar(
           content: Text('Cartão sendo apagado. Pode levar até 1 minuto.')));
       await Future.delayed(const Duration(seconds: 15));
