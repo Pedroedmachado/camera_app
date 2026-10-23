@@ -24,7 +24,13 @@ jobs:
       - name: Checar código
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
       - name: Compilar APK
-        run: flutter build apk --release --split-per-abi
+        run: |
+          set -o pipefail
+          if ! flutter build apk --release --split-per-abi 2>&1 | tee build.log; then
+            msg=$(grep -iE "error|what went wrong|unresolved|failed|exception" -A3 build.log | head -40 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Erro no APK::$msg"
+            exit 1
+          fi
       - name: Renomear APKs
         run: |
           mkdir out
@@ -49,7 +55,14 @@ jobs:
         run: bash tool/prepare.sh
       - run: flutter pub get
       - name: Compilar Windows
-        run: flutter build windows --release
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! flutter build windows --release 2>&1 | tee build.log; then
+            msg=$(grep -iE "error|failed" -A3 build.log | head -40 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Erro no Windows::$msg"
+            exit 1
+          fi
       - name: Compactar
         shell: pwsh
         run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath CamLivre-Windows.zip
