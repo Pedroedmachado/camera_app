@@ -6,10 +6,12 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'config.dart';
 import 'gallery_page.dart';
+import 'rtsp_probe.dart';
 import 'settings_page.dart';
 import 'storage.dart';
 
@@ -45,23 +47,45 @@ class _LivePageState extends State<LivePage> {
   Timer? _retry;
   final List<StreamSubscription> _subs = [];
 
+  // Modos de transporte RTSP testados em ordem; o que funcionar fica salvo.
+  static const _transports = ['tcp', 'udp', 'http'];
+  List<String> _order = List.of(_transports);
+  int _attempt = 0;
+  bool _failureHandled = false;
+  bool _diagnosing = false;
+  String? _diagnosis;
+  final List<String> _log = [];
+
   @override
   void initState() {
     super.initState();
     WakelockPlus.enable();
     _subs.add(_player.stream.error.listen(_onError));
+    _subs.add(_player.stream.log.listen((l) {
+      final lvl = l.level.toLowerCase();
+      if (lvl == 'warn' || lvl == 'error' || lvl == 'fatal') {
+        _log.add('[${l.prefix}] ${l.text.trim()}');
+        if (_log.length > 8) _log.removeAt(0);
+      }
+    }));
     _subs.add(_player.stream.width.listen((w) {
       if ((w ?? 0) > 0 && mounted) {
+        _retry?.cancel();
+        _saveTransport(_order[_attempt]);
         setState(() {
           _hasVideo = true;
           _connecting = false;
           _error = null;
+          _diagnosis = null;
         });
       }
     }));
     _subs.add(_player.stream.completed.listen((done) {
-      // Stream caiu (Wi-Fi, câmera reiniciou...): tenta de novo.
-      if (done) _scheduleRetry('Conexão encerrada pela câmera.');
+      // Só conta como queda se o vídeo já estava passando.
+      if (done && _hasVideo) {
+        setState(() => _hasVideo = false);
+        _connect();
+      }
     }));
     _loadAndConnect();
   }
@@ -92,28 +116,41 @@ class _LivePageState extends State<LivePage> {
     }
   }
 
+  Future<void> _saveTransport(String t) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString('transport', t);
+  }
+
   Future<void> _loadAndConnect() async {
     final cfg = await CameraConfig.load();
+    final sp = await SharedPreferences.getInstance();
+    final saved = sp.getString('transport');
     if (!mounted) return;
     setState(() {
       _cfg = cfg;
       _hd = cfg.hd;
+      _order = List.of(_transports);
+      if (saved != null && _order.remove(saved)) _order.insert(0, saved);
     });
     if (cfg.isComplete) await _connect();
   }
 
-  Future<void> _connect() async {
+  /// [fresh] = começa a sequência de modos do zero.
+  Future<void> _connect({bool fresh = true}) async {
     final cfg = _cfg;
     if (cfg == null || !cfg.isComplete) return;
     _retry?.cancel();
     if (_recording) await _stopRecording();
+    if (fresh) _attempt = 0;
+    _failureHandled = false;
+    _log.clear();
     setState(() {
       _connecting = true;
       _hasVideo = false;
       _error = null;
+      if (fresh) _diagnosis = null;
     });
-    // Baixa latência e RTSP por TCP (mais estável no Wi-Fi).
-    await _setProp('demuxer-lavf-o', 'rtsp_transport=tcp,fflags=nobuffer');
+    await _setProp('rtsp-transport', _order[_attempt]);
     await _setProp('cache', 'no');
     await _setProp('video-latency-hacks', 'yes');
     await _setProp('network-timeout', '10');
@@ -122,36 +159,58 @@ class _LivePageState extends State<LivePage> {
   }
 
   void _onError(String msg) {
-    if (!mounted) return;
-    _scheduleRetry(_friendlyError(msg));
+    if (!mounted || _failureHandled || _hasVideo) return;
+    _failureHandled = true;
+    if (_attempt < _order.length - 1) {
+      // Tenta o próximo modo de transporte na hora.
+      _attempt++;
+      _connect(fresh: false);
+      return;
+    }
+    setState(() {
+      _error = _friendlyError(msg);
+      _connecting = false;
+    });
+    _diagnose();
+    _retry = Timer(const Duration(seconds: 15), () {
+      if (mounted && _cfg?.isComplete == true && !_hasVideo) _connect();
+    });
   }
 
-  void _scheduleRetry(String message) {
+  /// Testa a câmera direto (sem o player) para dizer a causa real.
+  Future<void> _diagnose() async {
+    final cfg = _cfg;
+    if (cfg == null || _diagnosing) return;
+    setState(() => _diagnosing = true);
+    final r = await RtspProbe.run(
+      host: cfg.host.trim(),
+      port: cfg.port,
+      user: cfg.user,
+      password: cfg.password,
+      path: cfg.rtspPath(hd: _hd),
+    );
     if (!mounted) return;
     setState(() {
-      _error = message;
-      _connecting = false;
-      _hasVideo = false;
-    });
-    _retry?.cancel();
-    _retry = Timer(const Duration(seconds: 5), () {
-      if (mounted && _cfg?.isComplete == true) _connect();
+      _diagnosing = false;
+      _diagnosis = r.ok
+          ? '${r.message}\nO problema está no player do app — me mande este print.'
+          : r.message;
     });
   }
 
   String _friendlyError(String raw) {
-    final m = raw.toLowerCase();
+    final m = '$raw ${_log.join(' ')}'.toLowerCase();
     if (m.contains('401') || m.contains('unauthorized')) {
-      return 'Usuário ou senha errados. Confira em Configurações (a senha é a chave de acesso da câmera).';
+      return 'Usuário ou senha errados.';
     }
     if (m.contains('refused') || m.contains('timed out') || m.contains('timeout') ||
         m.contains('unreachable') || m.contains('no route')) {
-      return 'Não achei a câmera nesse IP. Confira o IP e se você está no mesmo Wi-Fi.';
+      return 'Não achei a câmera nesse IP.';
     }
     if (m.contains('404') || m.contains('not found')) {
-      return 'A câmera respondeu, mas recusou o caminho do vídeo. Confira o canal.';
+      return 'A câmera recusou o caminho do vídeo.';
     }
-    return 'Falha ao abrir o vídeo: $raw';
+    return 'Falha ao abrir o vídeo (testei TCP, UDP e HTTP).';
   }
 
   // ---------- ações ----------
@@ -350,22 +409,45 @@ class _LivePageState extends State<LivePage> {
         controls: NoVideoControls,
         fit: BoxFit.contain,
       ),
-      if (_connecting && !_hasVideo)
-        const Center(child: CircularProgressIndicator()),
-      if (_error != null && !_hasVideo)
+      if (_connecting && !_hasVideo && _error == null)
         Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.videocam_off_outlined, size: 40),
-              const SizedBox(height: 12),
-              Text(_error!, textAlign: TextAlign.center),
-              const SizedBox(height: 8),
-              const Text('Tentando de novo em 5 s…',
-                  style: TextStyle(color: Colors.white54)),
-              TextButton(onPressed: _connect, child: const Text('Tentar agora')),
-            ]),
-          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 12),
+            Text('Conectando (${_order[_attempt].toUpperCase()})…',
+                style: const TextStyle(color: Colors.white70)),
+          ]),
+        ),
+      if (_error != null && !_hasVideo)
+        SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(children: [
+            const Icon(Icons.videocam_off_outlined, size: 36),
+            const SizedBox(height: 8),
+            Text(_error!, textAlign: TextAlign.center),
+            const SizedBox(height: 10),
+            if (_diagnosing)
+              const Text('Testando a câmera direto…',
+                  style: TextStyle(color: Colors.white54))
+            else if (_diagnosis != null)
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.white10,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text('Diagnóstico: $_diagnosis',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.amberAccent)),
+              ),
+            if (_log.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(_log.join('\n'),
+                  style: const TextStyle(
+                      fontSize: 10, color: Colors.white38, fontFamily: 'monospace')),
+            ],
+            TextButton(onPressed: _connect, child: const Text('Tentar agora')),
+          ]),
         ),
       if (_recording)
         Positioned(

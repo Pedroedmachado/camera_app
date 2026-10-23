@@ -24,11 +24,15 @@ class CameraConfig {
 
   /// URL RTSP no padrão das câmeras Mibo (base Dahua).
   /// subtype=0 → stream principal (HD), subtype=1 → stream extra (SD).
-  String rtspUrl({bool? hd, bool hidePassword = false}) {
+  String rtspPath({bool? hd}) {
     final sub = (hd ?? this.hd) ? 0 : 1;
+    return '/cam/realmonitor?channel=$channel&subtype=$sub';
+  }
+
+  String rtspUrl({bool? hd, bool hidePassword = false}) {
     final u = Uri.encodeComponent(user);
     final p = hidePassword ? '****' : Uri.encodeComponent(password);
-    return 'rtsp://$u:$p@${host.trim()}:$port/cam/realmonitor?channel=$channel&subtype=$sub';
+    return 'rtsp://$u:$p@${host.trim()}:$port${rtspPath(hd: hd)}';
   }
 
   static Future<CameraConfig> load() async {

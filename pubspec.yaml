@@ -1,7 +1,7 @@
 name: camlivre
 description: App próprio para a câmera Intelbras Mibo iM3 C (RTSP local).
 publish_to: "none"
-version: 1.1.0+2
+version: 1.2.0+3
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -17,6 +17,7 @@ dependencies:
   shared_preferences: ^2.2.0
   wakelock_plus: ^1.2.0
   gal: ^2.3.0
+  crypto: ^3.0.3
 
 flutter:
   uses-material-design: true
