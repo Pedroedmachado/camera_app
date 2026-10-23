@@ -14,6 +14,7 @@ import 'gallery_page.dart';
 import 'rtsp_probe.dart';
 import 'settings_page.dart';
 import 'orientation.dart';
+import 'rec_saver.dart';
 import 'sd_page.dart';
 import 'storage.dart';
 import 'talk.dart';
@@ -253,8 +254,15 @@ class _LivePageState extends State<LivePage> {
 
   Future<void> _toggleRecording() async {
     if (_recording) {
-      await _stopRecording();
-      _toast('Vídeo salvo.', openGallery: true);
+      _toast('Salvando em MP4…');
+      final out = await _stopRecording();
+      if (out != null) {
+        _toast(
+            out.path.toLowerCase().endsWith('.mp4')
+                ? 'Vídeo salvo (MP4).'
+                : 'Vídeo salvo (não deu para converter para MP4).',
+            openGallery: true);
+      }
       return;
     }
     if (!_hasVideo) {
@@ -275,21 +283,22 @@ class _LivePageState extends State<LivePage> {
     });
   }
 
-  Future<void> _stopRecording() async {
+  /// Para a gravação e converte para MP4. Devolve o arquivo final.
+  Future<File?> _stopRecording() async {
     await _setProp('stream-record', '');
     _recTicker?.cancel();
     _recTicker = null;
-    if (!mounted) return;
-    setState(() {
-      _recording = false;
-      _recStart = null;
-    });
     final path = _recPath;
     _recPath = null;
-    if (path != null) {
-      final f = File(path);
-      if (await f.exists() && await f.length() < 1024) await f.delete();
+    if (mounted) {
+      setState(() {
+        _recording = false;
+        _recStart = null;
+      });
     }
+    if (path == null) return null;
+    // Grava em .mkv (aceita qualquer áudio) e converte para MP4 no final.
+    return finishAppRecording(path);
   }
 
   Future<void> _toggleFullscreen() async {

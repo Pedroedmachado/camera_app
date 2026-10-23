@@ -124,17 +124,18 @@ class _PlaybackPageState extends State<PlaybackPage> {
     _toast('Foto salva na Galeria.');
   }
 
-  /// Grava o que está passando na tela para um .mkv (funciona sem a API web).
+  /// Grava o que está passando na tela (vira MP4 no final; funciona sem a API web).
   Future<void> _toggleRecord() async {
     if (_recording) {
       await mpvSet(_player, 'stream-record', '');
       setState(() => _recording = false);
       final path = _recPath;
+      _recPath = null;
       if (path != null) {
-        final f = File(path);
-        if (await f.exists() && await f.length() < 1024) await f.delete();
+        _toast('Salvando em MP4…');
+        final out = await finishAppRecording(path);
+        if (out != null) _toast('Trecho salvo na Galeria (${p.extension(out.path)}).');
       }
-      _toast('Trecho salvo na Galeria.');
       return;
     }
     if (!_hasVideo) {
@@ -147,7 +148,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
     setState(() => _recording = true);
   }
 
-  /// Baixa a gravação inteira e converte para vídeo comum (.mkv).
+  /// Baixa a gravação inteira e converte para MP4.
   Future<void> _download() async {
     final rec = widget.recording;
     final api = widget.api;
@@ -274,14 +275,14 @@ class _PlaybackPageState extends State<PlaybackPage> {
                     child: FilledButton.icon(
                       onPressed: _download,
                       icon: const Icon(Icons.download),
-                      label: const Text('Salvar gravação como vídeo (.mkv)'),
+                      label: const Text('Salvar gravação como vídeo (MP4)'),
                     ),
                   ),
           ),
         const Padding(
           padding: EdgeInsets.all(16),
           child: Text(
-            '“Salvar como vídeo” baixa a gravação inteira do cartão e converte para .mkv, '
+            '“Salvar como vídeo” baixa a gravação inteira do cartão e converte para MP4, '
             'sem perder qualidade. “Gravar” salva só o que passar na tela.',
             style: TextStyle(color: Colors.white54, fontSize: 12),
           ),

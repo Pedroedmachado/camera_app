@@ -15,24 +15,32 @@ class ConvertError implements Exception {
   String toString() => message;
 }
 
-/// Converte o arquivo original da câmera (.dav) em vídeo comum (.mkv),
-/// sem perder qualidade (só troca o "envelope", não recodifica).
+/// Converte gravações (.dav da câmera ou .mkv) em MP4, que abre em qualquer
+/// celular, PC e no WhatsApp. Não recodifica o vídeo: sem perda de qualidade.
 class VideoConverter {
-  /// [duration] = duração real da gravação (usada no plano B para acertar a velocidade).
-  static Future<File> davToMkv(
-    File dav,
+  /// [duration] = duração real da gravação (usada no plano C para acertar a velocidade).
+  static Future<File> toMp4(
+    File input,
     File out, {
     Duration? duration,
     void Function(String status)? onStatus,
   }) async {
-    onStatus?.call('Convertendo…');
-    if (await _remux(dav.path, out)) return out;
+    onStatus?.call('Convertendo para MP4…');
+    if (await _remux(input.path, out)) return out;
 
-    // Plano B: extrai o vídeo puro de dentro do .dav e empacota de novo.
+    // O áudio de algumas câmeras (G.711) não cabe em MP4: salva só o vídeo.
+    onStatus?.call('Convertendo para MP4 (sem áudio)…');
+    if (await _remux(input.path, out, extra: const {'aid': 'no'})) return out;
+
+    if (!input.path.toLowerCase().endsWith('.dav')) {
+      throw ConvertError('Não consegui converter esse vídeo para MP4.');
+    }
+
+    // Plano C: extrai o vídeo puro de dentro do .dav e empacota de novo.
     onStatus?.call('Convertendo (modo alternativo)…');
     final tmp = await getTemporaryDirectory();
     final es = await DavExtractor.extract(
-        dav, File(p.join(tmp.path, 'camlivre_${DateTime.now().microsecondsSinceEpoch}.es')));
+        input, File(p.join(tmp.path, 'camlivre_${DateTime.now().microsecondsSinceEpoch}.es')));
     try {
       if (es.frames == 0) {
         throw ConvertError('Não achei vídeo dentro do arquivo da câmera.');
@@ -40,6 +48,7 @@ class VideoConverter {
       final secs = (duration?.inMilliseconds ?? 0) / 1000.0;
       final fps = secs > 1 ? (es.frames / secs).clamp(1.0, 60.0) : 15.0;
       final ok = await _remux(es.file.path, out, extra: {
+        'aid': 'no',
         'demuxer-lavf-format': es.hevc ? 'hevc' : 'h264',
         'demuxer-lavf-o': 'framerate=${fps.toStringAsFixed(3)}',
       });
@@ -50,7 +59,7 @@ class VideoConverter {
     }
   }
 
-  /// Usa o mpv do app para copiar as faixas para um .mkv.
+  /// Usa o mpv do app para copiar as faixas para o arquivo de saída.
   /// Com o player pausado e cache em disco, ele lê o arquivo inteiro sem tocar.
   static Future<bool> _remux(String input, File out,
       {Map<String, String> extra = const {}}) async {
@@ -61,6 +70,14 @@ class VideoConverter {
     );
     var failed = false;
     final sub = player.stream.error.listen((_) => failed = true);
+    // O gravador do mpv avisa no log quando o formato não aceita uma faixa.
+    final logSub = player.stream.log.listen((l) {
+      final lvl = l.level.toLowerCase();
+      if ((lvl == 'error' || lvl == 'fatal') &&
+          (l.prefix.contains('record') || l.text.toLowerCase().contains('record'))) {
+        failed = true;
+      }
+    });
     try {
       for (final e in {
         'vo': 'null',
@@ -107,6 +124,7 @@ class VideoConverter {
       await Future.delayed(const Duration(milliseconds: 300));
     } finally {
       await sub.cancel();
+      await logSub.cancel();
       await player.dispose();
     }
     final ok = !failed && await out.exists() && await out.length() > 20 * 1024;

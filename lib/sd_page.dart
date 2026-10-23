@@ -6,6 +6,7 @@ import 'config.dart';
 import 'dahua_http.dart';
 import 'playback_page.dart';
 import 'rec_saver.dart';
+import 'record_mode.dart';
 import 'sd_api.dart';
 import 'player_util.dart';
 
@@ -311,6 +312,7 @@ class _SdPageState extends State<SdPage> {
                 children: [
                   if (_apiError != null) _apiUnavailableCard(),
                   if (_apiError == null) _storageCard(),
+                  if (_apiError == null) RecordModeCard(cfg: widget.cfg),
                   const SizedBox(height: 8),
                   _dayBar(),
                   const SizedBox(height: 4),
@@ -506,7 +508,7 @@ class _SdPageState extends State<SdPage> {
               },
               itemBuilder: (_) => const [
                 PopupMenuItem(value: 'play', child: Text('Assistir')),
-                PopupMenuItem(value: 'save', child: Text('Salvar como vídeo (.mkv)')),
+                PopupMenuItem(value: 'save', child: Text('Salvar como vídeo (MP4)')),
               ],
             ),
             onTap: () => _play(r.start, r.end, rec: r),

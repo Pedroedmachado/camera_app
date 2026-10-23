@@ -246,10 +246,10 @@ List<Widget> _fileActions(BuildContext context, File file) {
     final messenger = ScaffoldMessenger.of(context);
     final nav = Navigator.of(context);
     messenger.showSnackBar(const SnackBar(
-        content: Text('Convertendo para vídeo… pode levar alguns segundos.'),
+        content: Text('Convertendo para MP4… pode levar alguns segundos.'),
         duration: Duration(seconds: 30)));
     try {
-      final out = await convertLocalDav(file);
+      final out = await convertLocalToMp4(file);
       messenger
         ..hideCurrentSnackBar()
         ..showSnackBar(SnackBar(content: Text('Vídeo criado: ${p.basename(out.path)}')));
@@ -262,9 +262,10 @@ List<Widget> _fileActions(BuildContext context, File file) {
   }
 
   return [
-    if (file.path.toLowerCase().endsWith('.dav'))
+    if (file.path.toLowerCase().endsWith('.dav') ||
+        file.path.toLowerCase().endsWith('.mkv'))
       IconButton(
-        tooltip: 'Converter para vídeo (.mkv)',
+        tooltip: 'Converter para MP4',
         icon: const Icon(Icons.transform),
         onPressed: convert,
       ),
