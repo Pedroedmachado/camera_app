@@ -1,11 +1,11 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:gal/gal.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path/path.dart' as p;
 
+import 'exporter.dart';
 import 'rec_saver.dart';
 import 'storage.dart';
 
@@ -19,6 +19,9 @@ class GalleryPage extends StatefulWidget {
 class _GalleryPageState extends State<GalleryPage> {
   List<File>? _files;
   String? _folder;
+  final Set<String> _selected = {};
+
+  bool get _selecting => _selected.isNotEmpty;
 
   @override
   void initState() {
@@ -33,6 +36,7 @@ class _GalleryPageState extends State<GalleryPage> {
       setState(() {
         _files = files;
         _folder = folder;
+        _selected.removeWhere((s) => !files.any((f) => f.path == s));
       });
     }
   }
@@ -46,11 +50,89 @@ class _GalleryPageState extends State<GalleryPage> {
     await _reload();
   }
 
+  void _toggle(File f) {
+    setState(() {
+      if (!_selected.remove(f.path)) _selected.add(f.path);
+    });
+  }
+
+  List<File> get _selectedFiles =>
+      [for (final f in _files ?? const <File>[]) if (_selected.contains(f.path)) f];
+
+  Future<void> _deleteSelected() async {
+    final files = _selectedFiles;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text('Apagar ${files.length} arquivo(s)?'),
+        content: const Text('Eles serão apagados só deste app.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Cancelar')),
+          FilledButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Apagar')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    for (final f in files) {
+      if (await f.exists()) await f.delete();
+    }
+    _selected.clear();
+    await _reload();
+  }
+
   @override
   Widget build(BuildContext context) {
     final files = _files;
     return Scaffold(
-      appBar: AppBar(title: const Text('Galeria')),
+      appBar: _selecting
+          ? AppBar(
+              leading: IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => setState(_selected.clear),
+              ),
+              title: Text('${_selected.length} selecionado(s)'),
+              actions: [
+                IconButton(
+                  tooltip: 'Selecionar tudo',
+                  icon: const Icon(Icons.select_all),
+                  onPressed: () => setState(() =>
+                      _selected.addAll([for (final f in files ?? const <File>[]) f.path])),
+                ),
+                Builder(
+                  builder: (ctx) => IconButton(
+                    tooltip: 'Exportar',
+                    icon: const Icon(Icons.ios_share),
+                    onPressed: () => Exporter.openMenu(ctx, _selectedFiles),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Apagar',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: _deleteSelected,
+                ),
+              ],
+            )
+          : AppBar(
+              title: const Text('Galeria'),
+              actions: [
+                if (files != null && files.isNotEmpty)
+                  TextButton.icon(
+                    onPressed: () => setState(() => _selected.add(files.first.path)),
+                    icon: const Icon(Icons.checklist),
+                    label: const Text('Selecionar'),
+                  ),
+                if (Platform.isWindows && _folder != null)
+                  IconButton(
+                    tooltip: 'Abrir pasta',
+                    icon: const Icon(Icons.folder_open),
+                    onPressed: () => Process.run('explorer', [_folder!]),
+                  ),
+              ],
+            ),
       body: files == null
           ? const Center(child: CircularProgressIndicator())
           : files.isEmpty
@@ -61,6 +143,12 @@ class _GalleryPageState extends State<GalleryPage> {
                       padding: const EdgeInsets.all(8),
                       child: SelectableText('Pasta: $_folder',
                           style: const TextStyle(fontSize: 12)),
+                    ),
+                  if (!_selecting)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text('Toque e segure para selecionar vários',
+                          style: TextStyle(color: Colors.white38, fontSize: 12)),
                     ),
                   Expanded(
                     child: GridView.builder(
@@ -82,8 +170,10 @@ class _GalleryPageState extends State<GalleryPage> {
 
   Widget _tile(File f) {
     final photo = Storage.isPhoto(f.path);
+    final sel = _selected.contains(f.path);
     return InkWell(
-      onTap: () => _open(f),
+      onTap: () => _selecting ? _toggle(f) : _open(f),
+      onLongPress: () => _toggle(f),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: Stack(fit: StackFit.expand, children: [
@@ -93,6 +183,16 @@ class _GalleryPageState extends State<GalleryPage> {
             Container(
               color: Colors.white10,
               child: const Icon(Icons.play_circle_outline, size: 40),
+            ),
+          if (sel) Container(color: Colors.greenAccent.withValues(alpha: 0.25)),
+          if (_selecting)
+            Positioned(
+              top: 4,
+              right: 4,
+              child: Icon(
+                sel ? Icons.check_circle : Icons.radio_button_unchecked,
+                color: sel ? Colors.greenAccent : Colors.white70,
+              ),
             ),
           Positioned(
             left: 0,
@@ -115,31 +215,8 @@ class _GalleryPageState extends State<GalleryPage> {
   }
 }
 
-/// Ações comuns: mandar para a galeria do Android e apagar.
+/// Ações comuns: converter, exportar e apagar.
 List<Widget> _fileActions(BuildContext context, File file) {
-  Future<void> toPhoneGallery() async {
-    final messenger = ScaffoldMessenger.of(context);
-    if (file.path.toLowerCase().endsWith('.dav')) {
-      messenger.showSnackBar(const SnackBar(
-          content: Text(
-              'Arquivo .dav não entra na galeria do celular. '
-              'Use o botão de converter para gerar o vídeo .mkv.')));
-      return;
-    }
-    try {
-      if (!await Gal.hasAccess(toAlbum: true)) await Gal.requestAccess(toAlbum: true);
-      if (Storage.isPhoto(file.path)) {
-        await Gal.putImage(file.path, album: 'CamLivre');
-      } else {
-        await Gal.putVideo(file.path, album: 'CamLivre');
-      }
-      messenger.showSnackBar(
-          const SnackBar(content: Text('Salvo na galeria do celular.')));
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Não deu para salvar: $e')));
-    }
-  }
-
   Future<void> delete() async {
     final nav = Navigator.of(context);
     final ok = await showDialog<bool>(
@@ -189,12 +266,13 @@ List<Widget> _fileActions(BuildContext context, File file) {
         icon: const Icon(Icons.transform),
         onPressed: convert,
       ),
-    if (Platform.isAndroid)
-      IconButton(
-        tooltip: 'Salvar na galeria do celular',
-        icon: const Icon(Icons.download_outlined),
-        onPressed: toPhoneGallery,
+    Builder(
+      builder: (ctx) => IconButton(
+        tooltip: 'Exportar / compartilhar',
+        icon: const Icon(Icons.ios_share),
+        onPressed: () => Exporter.openMenu(ctx, [file]),
       ),
+    ),
     IconButton(
       tooltip: 'Apagar',
       icon: const Icon(Icons.delete_outline),
