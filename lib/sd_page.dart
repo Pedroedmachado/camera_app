@@ -7,6 +7,7 @@ import 'dahua_http.dart';
 import 'playback_page.dart';
 import 'rec_saver.dart';
 import 'record_mode.dart';
+import 'timeline.dart';
 import 'sd_api.dart';
 import 'player_util.dart';
 
@@ -34,6 +35,7 @@ class _SdPageState extends State<SdPage> {
   String? _diskError;
 
   DateTime _day = DateTime.now();
+  DateTime _sel = DateTime.now().subtract(const Duration(minutes: 5));
   List<Recording>? _recs;
   bool _loadingRecs = false;
   String? _recsError;
@@ -92,7 +94,12 @@ class _SdPageState extends State<SdPage> {
     final to = from.add(const Duration(hours: 23, minutes: 59, seconds: 59));
     try {
       final r = await _api!.findRecordings(from, to, channel: widget.cfg.channel);
-      if (mounted) setState(() => _recs = r);
+      if (mounted) {
+        setState(() {
+          _recs = r;
+          _sel = _defaultSelection(r);
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -108,7 +115,11 @@ class _SdPageState extends State<SdPage> {
   void _changeDay(int delta) {
     final next = _day.add(Duration(days: delta));
     if (next.isAfter(DateTime.now())) return;
-    setState(() => _day = next);
+    setState(() {
+      _day = next;
+      _recs = null;
+      _sel = _defaultSelection(const []);
+    });
     if (_apiError == null) _loadRecs();
   }
 
@@ -120,7 +131,11 @@ class _SdPageState extends State<SdPage> {
       lastDate: DateTime.now(),
     );
     if (d != null) {
-      setState(() => _day = d);
+      setState(() {
+        _day = d;
+        _recs = null;
+        _sel = _defaultSelection(const []);
+      });
       if (_apiError == null) _loadRecs();
     }
   }
@@ -137,20 +152,146 @@ class _SdPageState extends State<SdPage> {
     ));
   }
 
-  /// Sem lista: escolhe um horário e assiste a partir dele (até 1 hora).
-  Future<void> _playAtTime() async {
-    final t = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.now(),
-      helpText: 'Assistir a partir de',
-    );
-    if (t == null) return;
-    final start = DateTime(_day.year, _day.month, _day.day, t.hour, t.minute);
+  /// Começa no último movimento do dia (ou na última gravação, ou agora).
+  DateTime _defaultSelection(List<Recording> recs) {
+    final motion = recs.where((r) => r.isMotion).toList();
+    final pick = motion.isNotEmpty ? motion : recs;
+    if (pick.isNotEmpty) {
+      return pick.reduce((a, b) => a.start.isAfter(b.start) ? a : b).start;
+    }
+    final now = DateTime.now();
+    final dayStart = DateTime(_day.year, _day.month, _day.day);
+    final dayEnd = dayStart.add(const Duration(days: 1));
+    if (now.isAfter(dayStart) && now.isBefore(dayEnd)) {
+      return now.subtract(const Duration(minutes: 5));
+    }
+    return dayStart.add(const Duration(hours: 12));
+  }
+
+  Recording? _recAt(DateTime t) {
+    for (final r in _recs ?? const <Recording>[]) {
+      if (!t.isBefore(r.start) && t.isBefore(r.end)) return r;
+    }
+    return null;
+  }
+
+  void _jumpEvent(int dir) {
+    final all = [...?_recs]..sort((a, b) => a.start.compareTo(b.start));
+    final motion = all.where((r) => r.isMotion).toList();
+    final list = motion.isNotEmpty ? motion : all;
+    Recording? target;
+    if (dir > 0) {
+      for (final r in list) {
+        if (r.start.isAfter(_sel.add(const Duration(seconds: 1)))) {
+          target = r;
+          break;
+        }
+      }
+    } else {
+      for (final r in list.reversed) {
+        if (r.start.isBefore(_sel.subtract(const Duration(seconds: 1)))) {
+          target = r;
+          break;
+        }
+      }
+    }
+    if (target == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(dir > 0 ? 'Não há evento depois.' : 'Não há evento antes.')));
+      return;
+    }
+    setState(() => _sel = target!.start);
+  }
+
+  /// Abre a reprodução no momento escolhido (até 1 hora ou até agora).
+  void _openAt(PlaybackAction action) {
+    final start = _sel;
     var end = start.add(const Duration(hours: 1));
     final now = DateTime.now();
     if (end.isAfter(now)) end = now;
-    if (!end.isAfter(start)) return;
-    _play(start, end);
+    if (end.difference(start) < const Duration(seconds: 5)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Escolha um momento um pouco antes de agora.')));
+      return;
+    }
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => PlaybackPage(
+        cfg: widget.cfg,
+        start: start,
+        end: end,
+        recording: _recAt(start),
+        api: _apiError == null ? _api : null,
+        autoAction: action,
+      ),
+    ));
+  }
+
+  Widget _timelineCard() {
+    final rec = _recAt(_sel);
+    final status = _apiError != null
+        ? ''
+        : (rec == null
+            ? ' · sem gravação aqui'
+            : (rec.isMotion ? ' · movimento' : ' · gravação'));
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          DayTimeline(
+            day: _day,
+            recordings: _recs ?? const [],
+            selected: _sel,
+            onSelect: (t) => setState(() => _sel = t),
+          ),
+          const SizedBox(height: 6),
+          Row(children: [
+            IconButton(
+              tooltip: 'Evento anterior',
+              icon: const Icon(Icons.skip_previous),
+              onPressed: () => _jumpEvent(-1),
+            ),
+            Expanded(
+              child: Text(
+                '${hms(_sel)}$status',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: rec?.isMotion == true ? Colors.amberAccent : null,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Próximo evento',
+              icon: const Icon(Icons.skip_next),
+              onPressed: () => _jumpEvent(1),
+            ),
+          ]),
+          const SizedBox(height: 4),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.icon(
+                onPressed: () => _openAt(PlaybackAction.none),
+                icon: const Icon(Icons.play_arrow),
+                label: const Text('Assistir daqui'),
+              ),
+              FilledButton.tonalIcon(
+                onPressed: () => _openAt(PlaybackAction.snapshot),
+                icon: const Icon(Icons.photo_camera_outlined),
+                label: const Text('Foto do momento'),
+              ),
+              FilledButton.tonalIcon(
+                onPressed: () => _openAt(PlaybackAction.record),
+                icon: const Icon(Icons.fiber_manual_record, color: Colors.redAccent),
+                label: const Text('Gravar daqui'),
+              ),
+            ],
+          ),
+        ]),
+      ),
+    );
   }
 
   Future<void> _format(StorageDisk disk) async {
@@ -311,20 +452,12 @@ class _SdPageState extends State<SdPage> {
                 padding: const EdgeInsets.all(12),
                 children: [
                   if (_apiError != null) _apiUnavailableCard(),
+                  _dayBar(),
+                  _timelineCard(),
+                  if (_apiError == null) ..._recordingList(),
+                  const SizedBox(height: 8),
                   if (_apiError == null) _storageCard(),
                   if (_apiError == null) RecordModeCard(cfg: widget.cfg),
-                  const SizedBox(height: 8),
-                  _dayBar(),
-                  const SizedBox(height: 4),
-                  Card(
-                    child: ListTile(
-                      leading: const Icon(Icons.schedule),
-                      title: const Text('Assistir a partir de um horário'),
-                      subtitle: Text('Dia ${dmy(_day)}'),
-                      onTap: _playAtTime,
-                    ),
-                  ),
-                  if (_apiError == null) ..._recordingList(),
                 ],
               ),
             ),

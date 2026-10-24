@@ -14,6 +14,9 @@ import 'player_util.dart';
 import 'rec_saver.dart';
 import 'storage.dart';
 
+/// O que fazer sozinho assim que o vídeo abrir.
+enum PlaybackAction { none, snapshot, record }
+
 /// Assiste uma gravação do cartão SD (stream de reprodução RTSP da câmera).
 class PlaybackPage extends StatefulWidget {
   const PlaybackPage({
@@ -23,6 +26,7 @@ class PlaybackPage extends StatefulWidget {
     required this.end,
     this.recording,
     this.api,
+    this.autoAction = PlaybackAction.none,
   });
 
   final CameraConfig cfg;
@@ -30,6 +34,7 @@ class PlaybackPage extends StatefulWidget {
   final DateTime end;
   final Recording? recording; // presente quando veio da lista
   final SdApi? api; // permite baixar o arquivo original
+  final PlaybackAction autoAction;
 
   @override
   State<PlaybackPage> createState() => _PlaybackPageState();
@@ -61,10 +66,12 @@ class _PlaybackPageState extends State<PlaybackPage> {
     super.initState();
     _subs.add(_player.stream.width.listen((w) {
       if ((w ?? 0) > 0 && mounted) {
+        final first = !_hasVideo;
         setState(() {
           _hasVideo = true;
           _error = null;
         });
+        if (first) _runAutoAction();
       }
     }));
     _subs.add(_player.stream.error.listen((e) {
@@ -80,6 +87,26 @@ class _PlaybackPageState extends State<PlaybackPage> {
       if (mounted) setState(() => _playing = v);
     }));
     _open();
+  }
+
+  bool _autoDone = false;
+
+  Future<void> _runAutoAction() async {
+    if (_autoDone) return;
+    _autoDone = true;
+    switch (widget.autoAction) {
+      case PlaybackAction.none:
+        return;
+      case PlaybackAction.snapshot:
+        // Espera a imagem firmar (o primeiro quadro pode vir borrado).
+        await Future.delayed(const Duration(milliseconds: 1500));
+        if (!mounted) return;
+        await _player.pause();
+        await _snapshot();
+      case PlaybackAction.record:
+        await _toggleRecord();
+        _toast('Gravando a partir de ${hms(widget.start)}. Toque em Parar quando quiser.');
+    }
   }
 
   Future<void> _open() async {
