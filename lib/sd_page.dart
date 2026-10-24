@@ -205,7 +205,20 @@ class _SdPageState extends State<SdPage> {
 
   /// Abre a reprodução no momento escolhido (até 1 hora ou até agora).
   void _openAt(PlaybackAction action) {
-    final start = _sel;
+    var start = _sel;
+    var rec = _recAt(start);
+    if (rec == null && _recs != null && _recs!.isNotEmpty) {
+      // Sem gravação nesse instante: abre a próxima gravação do dia.
+      final after = [..._recs!.where((r) => r.start.isAfter(start))]
+        ..sort((a, b) => a.start.compareTo(b.start));
+      if (after.isNotEmpty) {
+        rec = after.first;
+        start = rec.start;
+        setState(() => _sel = start);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Sem gravação nesse horário. Abrindo a próxima (${hms(start)}).')));
+      }
+    }
     var end = start.add(const Duration(hours: 1));
     final now = DateTime.now();
     if (end.isAfter(now)) end = now;
@@ -219,7 +232,7 @@ class _SdPageState extends State<SdPage> {
         cfg: widget.cfg,
         start: start,
         end: end,
-        recording: _recAt(start),
+        recording: rec,
         api: _apiError == null ? _api : null,
         autoAction: action,
       ),

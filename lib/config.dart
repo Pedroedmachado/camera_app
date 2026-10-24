@@ -49,7 +49,7 @@ class CameraConfig {
     }
 
     return 'rtsp://$_auth@${host.trim()}:$port/cam/playback'
-        '?channel=$channel&starttime=${f(start)}&endtime=${f(end)}';
+        '?channel=$channel&subtype=0&starttime=${f(start)}&endtime=${f(end)}';
   }
 
   static Future<CameraConfig> load() async {
