@@ -1,11 +1,10 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:media_kit/media_kit.dart';
-import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'media/dav_reader.dart';
 import 'player_util.dart';
 
 class ConvertError implements Exception {
@@ -16,47 +15,43 @@ class ConvertError implements Exception {
 }
 
 /// Converte gravações (.dav da câmera ou .mkv) em MP4, que abre em qualquer
-/// celular, PC e no WhatsApp. Não recodifica o vídeo: sem perda de qualidade.
+/// celular, PC, VLC e WhatsApp. Não recodifica o vídeo: sem perda de qualidade.
 class VideoConverter {
-  /// [duration] = duração real da gravação (usada no plano C para acertar a velocidade).
   static Future<File> toMp4(
     File input,
     File out, {
     Duration? duration,
+    DateTime? from,
+    DateTime? to,
     void Function(String status)? onStatus,
   }) async {
+    if (input.path.toLowerCase().endsWith('.dav')) {
+      // Conversão própria do app (funciona no celular e no PC).
+      onStatus?.call('Convertendo para MP4…');
+      try {
+        await DavReader.toMp4(input, out,
+            from: from,
+            to: to,
+            onProgress: (pr) =>
+                onStatus?.call('Convertendo para MP4… ${(pr * 100).toStringAsFixed(0)}%'));
+        return out;
+      } catch (e) {
+        if (await out.exists()) await out.delete();
+        throw ConvertError('$e');
+      }
+    }
+
+    if (Platform.isAndroid || Platform.isIOS) {
+      throw ConvertError(
+          'No celular só dá para converter arquivos .dav da câmera. Converta este no PC.');
+    }
     onStatus?.call('Convertendo para MP4…');
     if (await _remux(input.path, out)) return out;
 
     // O áudio de algumas câmeras (G.711) não cabe em MP4: salva só o vídeo.
     onStatus?.call('Convertendo para MP4 (sem áudio)…');
     if (await _remux(input.path, out, extra: const {'aid': 'no'})) return out;
-
-    if (!input.path.toLowerCase().endsWith('.dav')) {
-      throw ConvertError('Não consegui converter esse vídeo para MP4.');
-    }
-
-    // Plano C: extrai o vídeo puro de dentro do .dav e empacota de novo.
-    onStatus?.call('Convertendo (modo alternativo)…');
-    final tmp = await getTemporaryDirectory();
-    final es = await DavExtractor.extract(
-        input, File(p.join(tmp.path, 'camlivre_${DateTime.now().microsecondsSinceEpoch}.es')));
-    try {
-      if (es.frames == 0) {
-        throw ConvertError('Não achei vídeo dentro do arquivo da câmera.');
-      }
-      final secs = (duration?.inMilliseconds ?? 0) / 1000.0;
-      final fps = secs > 1 ? (es.frames / secs).clamp(1.0, 60.0) : 15.0;
-      final ok = await _remux(es.file.path, out, extra: {
-        'aid': 'no',
-        'demuxer-lavf-format': es.hevc ? 'hevc' : 'h264',
-        'demuxer-lavf-o': 'framerate=${fps.toStringAsFixed(3)}',
-      });
-      if (!ok) throw ConvertError('Não consegui converter esse vídeo.');
-      return out;
-    } finally {
-      if (await es.file.exists()) await es.file.delete();
-    }
+    throw ConvertError('Não consegui converter esse vídeo para MP4.');
   }
 
   /// Usa o mpv do app para copiar as faixas para o arquivo de saída.
@@ -130,95 +125,5 @@ class VideoConverter {
     final ok = !failed && await out.exists() && await out.length() > 20 * 1024;
     if (!ok && await out.exists()) await out.delete();
     return ok;
-  }
-}
-
-class DavStream {
-  final File file;
-  final int frames;
-  final bool hevc;
-  DavStream(this.file, this.frames, this.hevc);
-}
-
-/// Lê o formato DAV da Dahua: blocos "DHAV" (cabeçalho de 24 bytes +
-/// extensão + dados + "dhav" e tamanho). Junta só os quadros de vídeo.
-class DavExtractor {
-  static const _magic = [0x44, 0x48, 0x41, 0x56]; // "DHAV"
-
-  static Future<DavStream> extract(File dav, File out) async {
-    final raf = await dav.open();
-    final sink = out.openWrite();
-    final total = await raf.length();
-    var pos = 0;
-    var frames = 0;
-    bool? hevc;
-    try {
-      while (pos + 24 <= total) {
-        await raf.setPosition(pos);
-        final h = await raf.read(24);
-        if (h.length < 24) break;
-        if (!_isMagic(h, 0)) {
-          final next = await _findMagic(raf, pos + 1, total);
-          if (next < 0) break;
-          pos = next;
-          continue;
-        }
-        final bd = ByteData.sublistView(h);
-        final type = h[4];
-        final frameLen = bd.getUint32(12, Endian.little);
-        final extLen = h[22];
-        if (frameLen < 24 + extLen + 8 || pos + frameLen > total) {
-          pos += 4; // bloco quebrado: procura o próximo
-          continue;
-        }
-        if (type == 0xFC || type == 0xFD) {
-          final payloadLen = frameLen - 24 - extLen - 8;
-          await raf.setPosition(pos + 24 + extLen);
-          final data = await raf.read(payloadLen);
-          hevc ??= _detectHevc(data);
-          sink.add(data);
-          frames++;
-        }
-        pos += frameLen;
-      }
-    } finally {
-      await raf.close();
-      await sink.close();
-    }
-    return DavStream(out, frames, hevc ?? false);
-  }
-
-  static bool _isMagic(List<int> b, int i) =>
-      b.length >= i + 4 &&
-      b[i] == _magic[0] &&
-      b[i + 1] == _magic[1] &&
-      b[i + 2] == _magic[2] &&
-      b[i + 3] == _magic[3];
-
-  static Future<int> _findMagic(RandomAccessFile raf, int from, int total) async {
-    const window = 64 * 1024;
-    var start = from;
-    while (start < total) {
-      await raf.setPosition(start);
-      final buf = await raf.read(window + 3);
-      if (buf.isEmpty) return -1;
-      for (var i = 0; i + 3 < buf.length; i++) {
-        if (_isMagic(buf, i)) return start + i;
-      }
-      start += window;
-    }
-    return -1;
-  }
-
-  /// H.265 começa com VPS (tipo 32); H.264 com SPS (tipo 7).
-  static bool _detectHevc(Uint8List d) {
-    for (var i = 0; i + 4 < d.length && i < 4096; i++) {
-      if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1) {
-        final b = d[i + 3];
-        if (((b >> 1) & 0x3F) == 32) return true;
-        if ((b & 0x1F) == 7) return false;
-      }
-    }
-    return false;
   }
 }

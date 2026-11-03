@@ -22,6 +22,8 @@ enum PlaybackAction { none, snapshot, record }
 
 /// Gravações já baixadas nesta sessão (caminho no cartão → MP4 local).
 final Map<String, File> _localCache = {};
+/// Arquivo original (.dav) de cada gravação baixada, para cortar trechos.
+final Map<String, File> _davCache = {};
 
 /// Assiste uma gravação do cartão SD. Com a lista do cartão, baixa o arquivo e
 /// toca localmente (permite avançar/voltar); sem ela, tenta o RTSP da câmera.
@@ -61,7 +63,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
   Duration _pos = Duration.zero;
 
   bool _recording = false;
-  String? _recPath;
+  Duration? _markStart; // início do trecho marcado
 
   bool _downloading = false;
   double _dlProgress = 0;
@@ -122,7 +124,9 @@ class _PlaybackPageState extends State<PlaybackPage> {
         await _snapshot();
       case PlaybackAction.record:
         await _toggleRecord();
-        _toast('Gravando a partir de ${hms(widget.start)}. Toque em Parar quando quiser.');
+        if (_recording) {
+          _toast('Marcando a partir de ${hms(widget.start)}. Toque em Parar para salvar o trecho.');
+        }
     }
   }
 
@@ -167,6 +171,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
       final id = DateTime.now().microsecondsSinceEpoch;
       final dav = File(p.join(tmp.path, 'pb_$id.dav'));
       final out = File(p.join(tmp.path, 'pb_$id.mp4'));
+      var ok = false;
       try {
         await api.download(rec, dav,
             cancelled: () => _disposed,
@@ -180,10 +185,16 @@ class _PlaybackPageState extends State<PlaybackPage> {
             _loadProgress = 0;
           });
         }
-        await VideoConverter.toMp4(dav, out, duration: rec.duration);
+        await VideoConverter.toMp4(dav, out,
+            duration: rec.duration,
+            onStatus: (st) {
+              if (mounted) setState(() => _loadStatus = st);
+            });
+        ok = true;
       } finally {
-        if (await dav.exists()) await dav.delete();
+        if (!ok && await dav.exists()) await dav.delete();
       }
+      _davCache[rec.filePath] = dav;
       mp4 = out;
       _localCache[rec.filePath] = out;
     }
@@ -214,7 +225,6 @@ class _PlaybackPageState extends State<PlaybackPage> {
     }
     _dlCancel = true;
     _disposed = true;
-    if (_recording) mpvSet(_player, 'stream-record', '');
     _player.dispose();
     super.dispose();
   }
@@ -242,28 +252,52 @@ class _PlaybackPageState extends State<PlaybackPage> {
     _toast('Foto salva na Galeria.');
   }
 
-  /// Grava o que está passando na tela (vira MP4 no final; funciona sem a API web).
+  /// "Gravar": marca o início; "Parar": salva o trecho em MP4 (corte direto
+  /// do arquivo da câmera, sem recodificar).
   Future<void> _toggleRecord() async {
-    if (_recording) {
-      await mpvSet(_player, 'stream-record', '');
-      setState(() => _recording = false);
-      final path = _recPath;
-      _recPath = null;
-      if (path != null) {
-        _toast('Salvando em MP4…');
-        final out = await finishAppRecording(path);
-        if (out != null) _toast('Trecho salvo na Galeria (${p.extension(out.path)}).');
+    final rec = widget.recording;
+    final dav = rec == null ? null : _davCache[rec.filePath];
+    if (!_fileMode || rec == null || dav == null || !await dav.exists()) {
+      _toast('Para gravar um trecho, abra a gravação pela lista ou linha do tempo do cartão.');
+      return;
+    }
+    if (!_recording) {
+      if (!_hasVideo) {
+        _toast('Espere o vídeo abrir.');
+        return;
       }
+      setState(() {
+        _recording = true;
+        _markStart = _pos;
+      });
       return;
     }
-    if (!_hasVideo) {
-      _toast('Espere o vídeo abrir.');
-      return;
-    }
+    final start = _markStart ?? Duration.zero;
+    var end = _pos;
+    setState(() {
+      _recording = false;
+      _markStart = null;
+    });
+    if (end - start < const Duration(seconds: 1)) end = start + const Duration(seconds: 1);
+    final from = rec.start.add(start);
+    final to = rec.start.add(end);
     final dir = await Storage.videos();
-    _recPath = p.join(dir.path, 'cartao_${Storage.stamp()}.mkv');
-    await mpvSet(_player, 'stream-record', _recPath!);
-    setState(() => _recording = true);
+    final s0 = from;
+    final out = File(p.join(dir.path,
+        'trecho_${s0.year}${two(s0.month)}${two(s0.day)}_${two(s0.hour)}${two(s0.minute)}${two(s0.second)}.mp4'));
+    _toast('Salvando trecho em MP4…');
+    try {
+      await VideoConverter.toMp4(dav, out, from: from, to: to);
+      if (Platform.isAndroid) {
+        try {
+          if (!await Gal.hasAccess(toAlbum: true)) await Gal.requestAccess(toAlbum: true);
+          await Gal.putVideo(out.path, album: 'CamLivre');
+        } catch (_) {}
+      }
+      _toast('Trecho salvo: ${p.basename(out.path)}');
+    } catch (e) {
+      _toast('Não deu para salvar o trecho: $e');
+    }
   }
 
   /// Baixa a gravação inteira e converte para MP4.

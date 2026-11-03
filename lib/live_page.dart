@@ -3,18 +3,19 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:gal/gal.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path/path.dart' as p;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'config.dart';
 import 'gallery_page.dart';
+import 'media/live_session.dart';
+import 'media/rtsp_client.dart';
 import 'rtsp_probe.dart';
 import 'settings_page.dart';
 import 'orientation.dart';
-import 'rec_saver.dart';
 import 'sd_page.dart';
 import 'storage.dart';
 import 'talk.dart';
@@ -48,17 +49,15 @@ class _LivePageState extends State<LivePage> {
   bool _talkStarting = false;
 
   bool _recording = false;
-  String? _recPath;
   DateTime? _recStart;
   Timer? _recTicker;
 
   Timer? _retry;
   final List<StreamSubscription> _subs = [];
 
-  // Modos de transporte RTSP testados em ordem; o que funcionar fica salvo.
-  static const _transports = ['tcp', 'udp', 'http'];
-  List<String> _order = List.of(_transports);
-  int _attempt = 0;
+  // Sessão própria: recebe a câmera e entrega ao player (veja media/).
+  LiveSession? _session;
+  int _gen = 0; // evita misturar tentativas de conexão
   bool _failureHandled = false;
   bool _diagnosing = false;
   String? _diagnosis;
@@ -79,7 +78,6 @@ class _LivePageState extends State<LivePage> {
     _subs.add(_player.stream.width.listen((w) {
       if ((w ?? 0) > 0 && mounted) {
         _retry?.cancel();
-        _saveTransport(_order[_attempt]);
         setState(() {
           _hasVideo = true;
           _connecting = false;
@@ -92,7 +90,7 @@ class _LivePageState extends State<LivePage> {
       // Só conta como queda se o vídeo já estava passando.
       if (done && _hasVideo) {
         setState(() => _hasVideo = false);
-        _connect();
+        _scheduleReconnect('O vídeo parou.');
       }
     }));
     _clockTick = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -111,7 +109,7 @@ class _LivePageState extends State<LivePage> {
     for (final s in _subs) {
       s.cancel();
     }
-    if (_recording) _setProp('stream-record', '');
+    _session?.close();
     _talk?.stop();
     _player.dispose();
     WakelockPlus.disable();
@@ -131,64 +129,104 @@ class _LivePageState extends State<LivePage> {
     }
   }
 
-  Future<void> _saveTransport(String t) async {
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString('transport', t);
-  }
-
   Future<void> _loadAndConnect() async {
     final cfg = await CameraConfig.load();
-    final sp = await SharedPreferences.getInstance();
-    final saved = sp.getString('transport');
     if (!mounted) return;
     setState(() {
       _cfg = cfg;
       _hd = cfg.hd;
-      _order = List.of(_transports);
-      if (saved != null && _order.remove(saved)) _order.insert(0, saved);
     });
     if (cfg.isComplete) await _connect();
   }
 
-  /// [fresh] = começa a sequência de modos do zero.
-  Future<void> _connect({bool fresh = true}) async {
+  Future<void> _connect() async {
     final cfg = _cfg;
     if (cfg == null || !cfg.isComplete) return;
     _retry?.cancel();
     if (_recording) await _stopRecording();
-    if (fresh) _attempt = 0;
+    final gen = ++_gen;
     _failureHandled = false;
     _log.clear();
     setState(() {
       _connecting = true;
       _hasVideo = false;
       _error = null;
-      if (fresh) _diagnosis = null;
+      _diagnosis = null;
     });
-    await _setProp('rtsp-transport', _order[_attempt]);
-    await _setProp('cache', 'no');
-    await _setProp('video-latency-hacks', 'yes');
-    await _setProp('network-timeout', '10');
-    await _player.setVolume(_muted ? 0 : 100);
-    await _player.open(Media(cfg.rtspUrl(hd: _hd)), play: true);
+    final old = _session;
+    _session = null;
+    await _player.stop();
+    await old?.close();
+
+    final session = LiveSession(
+      host: cfg.host.trim(),
+      port: cfg.port,
+      user: cfg.user,
+      password: cfg.password,
+      path: cfg.rtspPath(hd: _hd),
+    );
+    try {
+      await session.start();
+      final url = await session.url;
+      if (gen != _gen || !mounted) {
+        await session.close();
+        return;
+      }
+      _session = session;
+      session.done.then((reason) {
+        if (gen == _gen && mounted) _scheduleReconnect(reason);
+      });
+      await _setProp('cache', 'no');
+      await _setProp('demuxer-lavf-o', 'fflags=+nobuffer');
+      await _setProp('demuxer-lavf-probesize', '32768');
+      await _setProp('demuxer-lavf-analyzeduration', '0.5');
+      await _setProp('video-latency-hacks', 'yes');
+      await _setProp('network-timeout', '10');
+      await _player.setVolume(_muted ? 0 : 100);
+      await _player.open(Media(url), play: true);
+    } catch (e) {
+      await session.close();
+      if (gen != _gen || !mounted) return;
+      _fail(e is RtspError ? e.message : 'Falha ao abrir o vídeo: $e');
+    }
   }
 
   void _onError(String msg) {
-    if (!mounted || _failureHandled || _hasVideo) return;
+    if (!mounted || _hasVideo) return;
+    _log.add(msg);
+    if (_log.length > 8) _log.removeAt(0);
+    _fail('O player não conseguiu mostrar o vídeo.');
+  }
+
+  void _fail(String message) {
+    if (!mounted || _failureHandled) return;
     _failureHandled = true;
-    if (_attempt < _order.length - 1) {
-      // Tenta o próximo modo de transporte na hora.
-      _attempt++;
-      _connect(fresh: false);
+    setState(() {
+      _error = message;
+      _connecting = false;
+      _hasVideo = false;
+    });
+    _diagnose();
+    _retry?.cancel();
+    _retry = Timer(const Duration(seconds: 15), () {
+      if (mounted && _cfg?.isComplete == true && !_hasVideo) _connect();
+    });
+  }
+
+  /// A conexão caiu depois de funcionar: tenta de novo em 3 s.
+  void _scheduleReconnect(String reason) {
+    if (!mounted) return;
+    if (!_hasVideo) {
+      _fail(reason);
       return;
     }
     setState(() {
-      _error = _friendlyError(msg);
-      _connecting = false;
+      _hasVideo = false;
+      _connecting = true;
     });
-    _diagnose();
-    _retry = Timer(const Duration(seconds: 15), () {
-      if (mounted && _cfg?.isComplete == true && !_hasVideo) _connect();
+    _retry?.cancel();
+    _retry = Timer(const Duration(seconds: 3), () {
+      if (mounted) _connect();
     });
   }
 
@@ -208,24 +246,9 @@ class _LivePageState extends State<LivePage> {
     setState(() {
       _diagnosing = false;
       _diagnosis = r.ok
-          ? '${r.message}\nO problema está no player do app — me mande este print.'
+          ? '${r.message}\nA câmera está ok; o problema está no app — me mande este print.'
           : r.message;
     });
-  }
-
-  String _friendlyError(String raw) {
-    final m = '$raw ${_log.join(' ')}'.toLowerCase();
-    if (m.contains('401') || m.contains('unauthorized')) {
-      return 'Usuário ou senha errados.';
-    }
-    if (m.contains('refused') || m.contains('timed out') || m.contains('timeout') ||
-        m.contains('unreachable') || m.contains('no route')) {
-      return 'Não achei a câmera nesse IP.';
-    }
-    if (m.contains('404') || m.contains('not found')) {
-      return 'A câmera recusou o caminho do vídeo.';
-    }
-    return 'Falha ao abrir o vídeo (testei TCP, UDP e HTTP).';
   }
 
   // ---------- ações ----------
@@ -261,28 +284,25 @@ class _LivePageState extends State<LivePage> {
 
   Future<void> _toggleRecording() async {
     if (_recording) {
-      _toast('Salvando em MP4…');
       final out = await _stopRecording();
-      if (out != null) {
-        _toast(
-            out.path.toLowerCase().endsWith('.mp4')
-                ? 'Vídeo salvo (MP4).'
-                : 'Vídeo salvo (não deu para converter para MP4).',
-            openGallery: true);
-      }
+      _toast(out != null ? 'Vídeo salvo (MP4).' : 'Nada foi gravado.',
+          openGallery: out != null);
       return;
     }
     if (!_hasVideo) {
       _toast('Sem imagem para gravar.');
       return;
     }
+    final session = _session;
+    if (session == null) {
+      _toast('Sem conexão com a câmera.');
+      return;
+    }
     final dir = await Storage.videos();
-    final path = p.join(dir.path, 'video_${Storage.stamp()}.mkv');
-    // O mpv copia o stream original para o arquivo, sem recodificar.
-    await _setProp('stream-record', path);
+    // MP4 direto (o app monta o arquivo, sem recodificar).
+    await session.startRecording(File(p.join(dir.path, 'video_${Storage.stamp()}.mp4')));
     setState(() {
       _recording = true;
-      _recPath = path;
       _recStart = DateTime.now();
     });
     _recTicker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -292,20 +312,24 @@ class _LivePageState extends State<LivePage> {
 
   /// Para a gravação e converte para MP4. Devolve o arquivo final.
   Future<File?> _stopRecording() async {
-    await _setProp('stream-record', '');
     _recTicker?.cancel();
     _recTicker = null;
-    final path = _recPath;
-    _recPath = null;
     if (mounted) {
       setState(() {
         _recording = false;
         _recStart = null;
       });
+    } else {
+      _recording = false;
     }
-    if (path == null) return null;
-    // Grava em .mkv (aceita qualquer áudio) e converte para MP4 no final.
-    return finishAppRecording(path);
+    final out = await _session?.stopRecording();
+    if (out != null && Platform.isAndroid) {
+      try {
+        if (!await Gal.hasAccess(toAlbum: true)) await Gal.requestAccess(toAlbum: true);
+        await Gal.putVideo(out.path, album: 'CamLivre');
+      } catch (_) {}
+    }
+    return out;
   }
 
   Future<void> _toggleFullscreen() async {
@@ -501,7 +525,7 @@ class _LivePageState extends State<LivePage> {
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             const CircularProgressIndicator(),
             const SizedBox(height: 12),
-            Text('Conectando (${_order[_attempt].toUpperCase()})…',
+            const Text('Conectando à câmera…',
                 style: const TextStyle(color: Colors.white70)),
           ]),
         ),

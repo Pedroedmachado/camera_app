@@ -5,6 +5,31 @@ on:
   workflow_dispatch:
 
 jobs:
+  selftest:
+    name: Autoteste de vídeo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Instalar ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - run: flutter pub get
+      - name: Testar .dav → MP4 e ao vivo (RTSP)
+        run: |
+          curl -sL https://github.com/bluenviron/mediamtx/releases/download/v1.9.3/mediamtx_v1.9.3_linux_amd64.tar.gz | tar xz mediamtx
+          ./mediamtx tool/mediamtx.yml > mediamtx.log 2>&1 &
+          sleep 2
+          set -o pipefail
+          if ! dart run tool/selftest.dart "$RUNNER_TEMP/st" live 2>&1 | tee selftest.log; then
+            msg=$(grep -E "FAIL|Error|error|Exception" selftest.log | head -30 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Autoteste falhou::$msg"
+            cat mediamtx.log
+            exit 1
+          fi
+
   android:
     name: APK Android
     runs-on: ubuntu-latest
@@ -73,7 +98,7 @@ jobs:
 
   release:
     name: Publicar download
-    needs: [android, windows]
+    needs: [android, windows, selftest]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

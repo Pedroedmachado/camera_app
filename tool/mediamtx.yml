@@ -1,0 +1,22 @@
+logLevel: warn
+rtspTransports: [tcp]
+rtspAuthMethods: [digest]
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+api: no
+authMethod: internal
+authInternalUsers:
+  - user: pub
+    pass: pub
+    ips: []
+    permissions:
+      - action: publish
+  - user: admin
+    pass: segredo
+    ips: []
+    permissions:
+      - action: read
+paths:
+  all_others:
