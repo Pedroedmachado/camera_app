@@ -90,3 +90,27 @@ Future<File?> finishAppRecording(String mkvPath) async {
     return mkv; // se não converter, mantém o .mkv
   }
 }
+
+/// Converte um arquivo escolhido pelo usuário (.dav, .mkv, .avi…) para MP4.
+/// No PC o MP4 fica na mesma pasta do original (o original é mantido);
+/// no celular vai para a Galeria do app.
+Future<File> convertExternalToMp4(File input, {void Function(String)? onStatus}) async {
+  final dir = Platform.isAndroid || Platform.isIOS
+      ? (await Storage.videos()).path
+      : p.dirname(input.path);
+  final base = p.basenameWithoutExtension(input.path);
+  var out = File(p.join(dir, '$base.mp4'));
+  var n = 1;
+  while (await out.exists()) {
+    out = File(p.join(dir, '$base ($n).mp4'));
+    n++;
+  }
+  await VideoConverter.toMp4(input, out, onStatus: onStatus);
+  if (Platform.isAndroid) {
+    try {
+      if (!await Gal.hasAccess(toAlbum: true)) await Gal.requestAccess(toAlbum: true);
+      await Gal.putVideo(out.path, album: 'CamLivre');
+    } catch (_) {}
+  }
+  return out;
+}

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -61,6 +62,140 @@ class _GalleryPageState extends State<GalleryPage> {
   List<File> get _selectedFiles =>
       [for (final f in _files ?? const <File>[]) if (_selected.contains(f.path)) f];
 
+  /// Converte vários arquivos para MP4 com janela de progresso.
+  Future<void> _convertMany(List<File> files, {required bool external}) async {
+    if (files.isEmpty) return;
+    var cancel = false;
+    var index = 0;
+    var status = '';
+    StateSetter? setDialog;
+    var closed = false;
+    final dialog = showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(builder: (c, set) {
+        setDialog = set;
+        return AlertDialog(
+          title: Text('Convertendo ${index + 1} de ${files.length}'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            if (index < files.length) Text(p.basename(files[index].path)),
+            const SizedBox(height: 10),
+            const LinearProgressIndicator(),
+            const SizedBox(height: 8),
+            Text(status, style: const TextStyle(color: Colors.white70)),
+          ]),
+          actions: [
+            TextButton(
+              onPressed: () {
+                cancel = true;
+                Navigator.pop(c);
+              },
+              child: const Text('Parar'),
+            ),
+          ],
+        );
+      }),
+    );
+    dialog.then((_) => closed = true);
+    void refresh(VoidCallback fn) {
+      if (!closed) setDialog?.call(fn);
+    }
+
+    var ok = 0;
+    final errors = <String>[];
+    String? lastOut;
+    for (index = 0; index < files.length && !cancel; index++) {
+      refresh(() => status = 'Convertendo…');
+      try {
+        final f = files[index];
+        final out = external
+            ? await convertExternalToMp4(f, onStatus: (s) => refresh(() => status = s))
+            : await convertLocalToMp4(f, onStatus: (s) => refresh(() => status = s));
+        lastOut = out.path;
+        ok++;
+      } catch (e) {
+        errors.add('${p.basename(files[index].path)}: $e');
+      }
+    }
+    if (!closed && mounted) Navigator.of(context, rootNavigator: true).pop();
+    await dialog;
+    await _reload();
+    if (!mounted) return;
+    final where = external && !(Platform.isAndroid || Platform.isIOS) && lastOut != null
+        ? ' na mesma pasta dos originais'
+        : ' na Galeria';
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      duration: const Duration(seconds: 8),
+      content: Text('$ok arquivo(s) convertido(s) para MP4$where.'
+          '${errors.isEmpty ? '' : '\n${errors.length} com erro: ${errors.first}'}'),
+      action: Platform.isWindows && lastOut != null
+          ? SnackBarAction(
+              label: 'Mostrar',
+              onPressed: () => Process.run('explorer', ['/select,', lastOut!]),
+            )
+          : null,
+    ));
+  }
+
+  Future<void> _convertMenu() async {
+    final pending = [
+      for (final f in _files ?? const <File>[])
+        if (f.path.toLowerCase().endsWith('.dav') || f.path.toLowerCase().endsWith('.mkv')) f
+    ];
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (c) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              'MP4 abre no VLC, no player do Windows, no celular e no WhatsApp. '
+              'Sem perder qualidade.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white70),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.folder_open),
+            title: Text(Platform.isWindows
+                ? 'Escolher arquivos do PC…'
+                : 'Escolher arquivos…'),
+            subtitle: const Text('.dav (da câmera), .mkv, .avi… — pode marcar vários'),
+            onTap: () => Navigator.pop(c, 'pick'),
+          ),
+          ListTile(
+            enabled: pending.isNotEmpty,
+            leading: const Icon(Icons.video_library_outlined),
+            title: const Text('Converter tudo da Galeria'),
+            subtitle: Text(pending.isEmpty
+                ? 'Tudo aqui já está em MP4'
+                : '${pending.length} arquivo(s) .dav/.mkv'),
+            onTap: () => Navigator.pop(c, 'all'),
+          ),
+        ]),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    if (choice == 'all') {
+      await _convertMany(pending, external: false);
+      return;
+    }
+    final result = await FilePicker.platform.pickFiles(
+      dialogTitle: 'Escolha as gravações para converter',
+      allowMultiple: true,
+      type: Platform.isWindows ? FileType.custom : FileType.any,
+      allowedExtensions:
+          Platform.isWindows ? const ['dav', 'mkv', 'avi', 'ts', 'mov', 'h264', 'h265'] : null,
+    );
+    if (result == null || !mounted) return;
+    final picked = [
+      for (final f in result.files)
+        if (f.path != null) File(f.path!)
+    ];
+    await _convertMany(picked, external: true);
+  }
+
   Future<void> _deleteSelected() async {
     final files = _selectedFiles;
     final ok = await showDialog<bool>(
@@ -121,6 +256,11 @@ class _GalleryPageState extends State<GalleryPage> {
           : AppBar(
               title: const Text('Galeria'),
               actions: [
+                IconButton(
+                  tooltip: 'Converter para MP4',
+                  icon: const Icon(Icons.transform),
+                  onPressed: _convertMenu,
+                ),
                 if (files != null && files.isNotEmpty)
                   TextButton.icon(
                     onPressed: () => setState(() => _selected.add(files.first.path)),
