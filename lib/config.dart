@@ -12,6 +12,7 @@ class CameraConfig {
   bool hd;
   int rotation; // giro só na tela do app, em quartos de volta (0, 1, 2, 3)
   bool mirror; // espelhar só na tela do app
+  bool appClock; // data/hora desenhada pelo app (a da câmera fica escondida)
 
   CameraConfig({
     this.name = 'Câmera',
@@ -24,6 +25,7 @@ class CameraConfig {
     this.hd = true,
     this.rotation = 0,
     this.mirror = false,
+    this.appClock = false,
   });
 
   bool get isComplete => host.trim().isNotEmpty && password.isNotEmpty;
@@ -65,6 +67,7 @@ class CameraConfig {
       hd: sp.getBool('hd') ?? true,
       rotation: sp.getInt('rotation') ?? 0,
       mirror: sp.getBool('mirror') ?? false,
+      appClock: sp.getBool('appClock') ?? false,
     );
   }
 
@@ -80,5 +83,6 @@ class CameraConfig {
     await sp.setBool('hd', hd);
     await sp.setInt('rotation', rotation);
     await sp.setBool('mirror', mirror);
+    await sp.setBool('appClock', appClock);
   }
 }

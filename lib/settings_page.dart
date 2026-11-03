@@ -65,6 +65,7 @@ class _SettingsPageState extends State<SettingsPage> {
       hd: _hd,
       rotation: old.rotation,
       mirror: old.mirror,
+      appClock: old.appClock,
     );
     await cfg.save();
     if (mounted) Navigator.of(context).pop(true);

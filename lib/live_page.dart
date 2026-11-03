@@ -95,13 +95,19 @@ class _LivePageState extends State<LivePage> {
         _connect();
       }
     }));
+    _clockTick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _cfg?.appClock == true && _hasVideo) setState(() {});
+    });
     _loadAndConnect();
   }
+
+  Timer? _clockTick;
 
   @override
   void dispose() {
     _retry?.cancel();
     _recTicker?.cancel();
+    _clockTick?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
@@ -245,7 +251,8 @@ class _LivePageState extends State<LivePage> {
       return;
     }
     final bytes =
-        await orientJpeg(raw, _cfg?.rotation ?? 0, _cfg?.mirror ?? false);
+        await orientJpeg(raw, _cfg?.rotation ?? 0, _cfg?.mirror ?? false,
+            stamp: _cfg?.appClock == true ? clockText(DateTime.now()) : null);
     final dir = await Storage.photos();
     final file = File(p.join(dir.path, 'foto_${Storage.stamp()}.jpg'));
     await file.writeAsBytes(bytes);
@@ -488,6 +495,7 @@ class _LivePageState extends State<LivePage> {
         rotation: _cfg?.rotation ?? 0,
         mirror: _cfg?.mirror ?? false,
       ),
+      if (_cfg?.appClock == true && _hasVideo) ClockOverlay(time: DateTime.now()),
       if (_connecting && !_hasVideo && _error == null)
         Center(
           child: Column(mainAxisSize: MainAxisSize.min, children: [

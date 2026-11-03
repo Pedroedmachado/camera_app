@@ -230,7 +230,8 @@ class _PlaybackPageState extends State<PlaybackPage> {
     final raw = await _player.screenshot(format: 'image/jpeg');
     final bytes = raw == null
         ? null
-        : await orientJpeg(raw, widget.cfg.rotation, widget.cfg.mirror);
+        : await orientJpeg(raw, widget.cfg.rotation, widget.cfg.mirror,
+            stamp: widget.cfg.appClock ? clockText(_shownTime()) : null);
     if (bytes == null) {
       _toast('Sem imagem para fotografar.');
       return;
@@ -312,6 +313,13 @@ class _PlaybackPageState extends State<PlaybackPage> {
     }
   }
 
+  /// Hora real do quadro que está na tela.
+  DateTime _shownTime() {
+    final rec = widget.recording;
+    final base = _fileMode && rec != null ? rec.start : widget.start;
+    return base.add(_pos);
+  }
+
   @override
   Widget build(BuildContext context) {
     final rec = widget.recording;
@@ -340,6 +348,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
               rotation: widget.cfg.rotation,
               mirror: widget.cfg.mirror,
             ),
+            if (widget.cfg.appClock && _hasVideo) ClockOverlay(time: shown),
             if (_loadStatus != null)
               Center(
                 child: Padding(

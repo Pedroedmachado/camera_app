@@ -16,20 +16,115 @@ Widget orientVideo(Widget video, {required int rotation, required bool mirror}) 
 }
 
 /// Gira a foto (JPEG) do mesmo jeito que a tela, para salvar certinha.
-Future<Uint8List> orientJpeg(Uint8List bytes, int rotation, bool mirror) async {
-  if (rotation % 4 == 0 && !mirror) return bytes;
-  return compute(_orient, [bytes, rotation % 4, mirror]);
+/// [stamp] = data/hora para escrever no canto da foto (sempre de pé).
+Future<Uint8List> orientJpeg(Uint8List bytes, int rotation, bool mirror,
+    {String? stamp}) async {
+  if (rotation % 4 == 0 && !mirror && stamp == null) return bytes;
+  return compute(_orient, [bytes, rotation % 4, mirror, stamp ?? '']);
 }
 
 Uint8List _orient(List<Object> a) {
   final bytes = a[0] as Uint8List;
   final rot = a[1] as int;
   final mirror = a[2] as bool;
+  final stamp = a[3] as String;
   var im = img.decodeImage(bytes);
   if (im == null) return bytes;
   if (rot != 0) im = img.copyRotate(im, angle: rot * 90);
   if (mirror) im = img.flipHorizontal(im);
+  if (stamp.isNotEmpty) {
+    final font = im.width >= 1200 ? img.arial48 : img.arial24;
+    final x = (im.width * 0.02).round();
+    final y = (im.height * 0.03).round();
+    // Contorno escuro para ler em qualquer fundo.
+    for (final d in const [[-2, 0], [2, 0], [0, -2], [0, 2]]) {
+      img.drawString(im, stamp,
+          font: font, x: x + d[0], y: y + d[1], color: img.ColorRgb8(0, 0, 0));
+    }
+    img.drawString(im, stamp, font: font, x: x, y: y, color: img.ColorRgb8(255, 255, 255));
+  }
   return Uint8List.fromList(img.encodeJpg(im, quality: 92));
+}
+
+/// Texto da data/hora no padrão da câmera: 03/11/2026 11:42:05.
+String clockText(DateTime t) {
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${two(t.day)}/${two(t.month)}/${t.year} '
+      '${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
+}
+
+/// Data/hora desenhada pelo app por cima do vídeo, sempre de pé.
+class ClockOverlay extends StatelessWidget {
+  const ClockOverlay({super.key, required this.time});
+  final DateTime time;
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: 8,
+      left: 8,
+      child: IgnorePointer(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.black38,
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(
+            clockText(time),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              fontFeatures: [FontFeature.tabularFigures()],
+              shadows: [Shadow(blurRadius: 2, color: Colors.black)],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Mostra/esconde a data e hora que a própria câmera escreve na imagem
+/// (config Dahua "VideoWidget" → TimeTitle).
+class CameraOsd {
+  CameraOsd(CameraConfig cfg)
+      : _api = RpcSdApi(DahuaHttp(
+          host: cfg.host.trim(),
+          port: cfg.httpPort,
+          user: cfg.user,
+          password: cfg.password,
+        )),
+        _ch = cfg.channel - 1;
+
+  final RpcSdApi _api;
+  final int _ch;
+
+  Future<void> setTimeVisible(bool visible) async {
+    final r = await _api.call('configManager.getConfig', params: {'name': 'VideoWidget'});
+    final p = r['params'];
+    final t = p is Map ? p['table'] : null;
+    final list = t is List
+        ? [for (final x in t) x is Map ? Map<String, dynamic>.from(x) : x]
+        : (t is Map ? [Map<String, dynamic>.from(t)] : null);
+    if (list == null || list.isEmpty) {
+      throw HttpUnavailable('A câmera não informou a configuração de data/hora na imagem.');
+    }
+    final row = list[_ch.clamp(0, list.length - 1)];
+    if (row is! Map<String, dynamic> || row['TimeTitle'] is! Map) {
+      throw HttpUnavailable('A câmera não tem a opção de data/hora na imagem.');
+    }
+    final tt = Map<String, dynamic>.from(row['TimeTitle'] as Map);
+    tt['EncodeBlend'] = visible;
+    if (tt.containsKey('PreviewBlend')) tt['PreviewBlend'] = visible;
+    row['TimeTitle'] = tt;
+    final w = await _api.call('configManager.setConfig',
+        params: {'name': 'VideoWidget', 'table': list, 'options': []});
+    if (w['result'] != true) {
+      throw HttpUnavailable('A câmera recusou a mudança (${w['error'] ?? 'sem detalhe'}).');
+    }
+  }
 }
 
 /// Estado de inversão gravado na própria câmera.
@@ -145,6 +240,42 @@ class _OrientationSheetState extends State<_OrientationSheet> {
     }
   }
 
+  bool _clockBusy = false;
+  String? _clockError;
+
+  /// Liga/desliga a data/hora do app (e esconde/mostra a da câmera).
+  Future<void> _setAppClock(bool on) async {
+    final cfg = widget.cfg;
+    setState(() {
+      _clockBusy = true;
+      _clockError = null;
+    });
+    try {
+      await CameraOsd(cfg).setTimeVisible(!on);
+    } catch (e) {
+      _clockError = on
+          ? 'Não deu para esconder a data/hora da câmera ($e). '
+              'A do app aparece mesmo assim.'
+          : 'Não deu para voltar a data/hora da câmera ($e).';
+    }
+    cfg.appClock = on;
+    await cfg.save();
+    widget.onAppChanged();
+    if (mounted) setState(() => _clockBusy = false);
+  }
+
+  /// Ao inverter a imagem, a data/hora da câmera fica de ponta-cabeça:
+  /// troca automaticamente pela do app.
+  Future<void> _autoClock(bool inverted) async {
+    if (inverted && !widget.cfg.appClock) {
+      await _setAppClock(true);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Data e hora agora aparecem de pé (desenhadas pelo app).')));
+      }
+    }
+  }
+
   Future<void> _setCamera({required bool flip, required bool mirror}) async {
     final st = _state;
     if (st == null) return;
@@ -152,6 +283,7 @@ class _OrientationSheetState extends State<_OrientationSheet> {
     try {
       await _flip.write(st, flip: flip, mirror: mirror);
       await _load();
+      await _autoClock(flip);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text('Pronto. A imagem da câmera muda em alguns segundos.')));
@@ -173,6 +305,7 @@ class _OrientationSheetState extends State<_OrientationSheet> {
     await cfg.save();
     widget.onAppChanged();
     if (mounted) setState(() {});
+    if (rotation != null && rotation % 4 != 0) await _autoClock(true);
   }
 
   @override
@@ -182,7 +315,8 @@ class _OrientationSheetState extends State<_OrientationSheet> {
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        child: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text('Na câmera (recomendado)',
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
           const SizedBox(height: 4),
@@ -244,7 +378,27 @@ class _OrientationSheetState extends State<_OrientationSheet> {
             'Dica: use só um dos dois. Se inverter na câmera, deixe o app em 0°.',
             style: TextStyle(color: Colors.white38, fontSize: 12),
           ),
-        ]),
+          const Divider(height: 28),
+          const Text('Data e hora',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            secondary: _clockBusy
+                ? const SizedBox(
+                    width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.schedule),
+            title: const Text('Data e hora sempre de pé'),
+            subtitle: const Text(
+                'Esconde a data/hora da câmera (que fica invertida) e mostra a do app '
+                'no ao vivo, nas gravações e nas fotos.'),
+            value: cfg.appClock,
+            onChanged: _clockBusy ? null : _setAppClock,
+          ),
+          if (_clockError != null)
+            Text(_clockError!,
+                style: const TextStyle(color: Colors.orangeAccent, fontSize: 13)),
+          ]),
+        ),
       ),
     );
   }
