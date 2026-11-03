@@ -1,12 +1,5 @@
-logLevel: warn
+logLevel: info
 rtspTransports: [tcp]
-rtspAuthMethods: [digest]
-rtmp: no
-hls: no
-webrtc: no
-srt: no
-api: no
-authMethod: internal
 authInternalUsers:
   - user: pub
     pass: pub
