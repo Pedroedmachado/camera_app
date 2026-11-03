@@ -1,5 +1,4 @@
 logLevel: info
-rtspTransports: [tcp]
 authInternalUsers:
   - user: pub
     pass: pub
